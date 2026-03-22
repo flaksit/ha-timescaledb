@@ -1,6 +1,6 @@
 # Home Assistant TimescaleDB App
 
-[![License](https://img.shields.io/github/license/flaksit/hass-timescaledb-addon)](LICENSE)
+[![License](https://img.shields.io/github/license/flaksit/hass-timescaledb)](LICENSE)
 
 A Home Assistant app providing PostgreSQL 18 with [TimescaleDB](https://www.timescale.com/) 2.25 — a high-performance time-series database optimized for the Raspberry Pi 5.
 
@@ -17,7 +17,7 @@ A Home Assistant app providing PostgreSQL 18 with [TimescaleDB](https://www.time
 
 1. Add this repository to your Home Assistant app store:
 
-   `https://github.com/flaksit/hass-timescaledb-addon`
+   `https://github.com/flaksit/hass-timescaledb`
 
 2. Install the "TimescaleDB" app
 3. Start the app

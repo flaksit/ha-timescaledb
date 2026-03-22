@@ -6,7 +6,7 @@ PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performa
 
 1. In Home Assistant, navigate to **Settings > Apps > App Store**
 2. Click the three-dot menu (top right) and select **Repositories**
-3. Add: `https://github.com/flaksit/hass-timescaledb-addon`
+3. Add: `https://github.com/flaksit/hass-timescaledb`
 4. Find "TimescaleDB" in the store and click **Install**
 5. Start the app — first startup initializes the database (this takes 30-60 seconds)
 6. Check the app logs to confirm: "Database 'homeassistant' with TimescaleDB ready"
@@ -132,7 +132,7 @@ The app exposes PostgreSQL on port **5432**. The `homeassistant` role can only c
 
 This removes the app and all PostgreSQL data in `/data/postgres`. The data cannot be recovered after uninstalling unless you have a separate backup.
 
-To also remove the repository, go to **Settings > Apps > App Store** > three-dot menu > **Repositories** and delete the `https://github.com/flaksit/hass-timescaledb-addon` entry.
+To also remove the repository, go to **Settings > Apps > App Store** > three-dot menu > **Repositories** and delete the `https://github.com/flaksit/hass-timescaledb` entry.
 
 ## Troubleshooting
 
