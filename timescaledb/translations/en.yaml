@@ -28,7 +28,7 @@ configuration:
     description: "Password for 'homeassistant_ro' (leave empty to auto-generate)"
   readonly_network:
     name: Read-Only Network
-    description: "Network access for 'homeassistant_ro' (internal = HAOS only, external = any IP)"
+    description: "Network access for 'homeassistant_ro'. internal = HAOS apps only. external = any IP (also enable host port in Network tab)"
   enable_readwrite:
     name: Enable Read-Write Role
     description: "Create 'homeassistant_rw' role with read-write access (no DDL)"
@@ -37,7 +37,7 @@ configuration:
     description: "Password for 'homeassistant_rw' (leave empty to auto-generate)"
   readwrite_network:
     name: Read-Write Network
-    description: "Network access for 'homeassistant_rw' (internal = HAOS only, external = any IP)"
+    description: "Network access for 'homeassistant_rw'. internal = HAOS apps only. external = any IP (also enable host port in Network tab)"
   enable_admin:
     name: Enable Admin Access
     description: "Set password on 'postgres' superuser and allow remote access"
@@ -46,4 +46,4 @@ configuration:
     description: "Password for 'postgres' superuser (leave empty to auto-generate)"
   admin_network:
     name: Admin Network
-    description: "Network access for 'postgres' (internal = HAOS only, external = any IP)"
+    description: "Network access for 'postgres'. internal = HAOS apps only. external = any IP (also enable host port in Network tab)"
