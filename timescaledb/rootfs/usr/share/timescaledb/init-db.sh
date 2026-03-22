@@ -66,7 +66,7 @@ chown -R postgres:postgres "${PGDATA}"
 # Start PostgreSQL temporarily for initialization
 bashio::log.info "Starting PostgreSQL temporarily for initialization..."
 gosu postgres pg_ctl -D "${PGDATA}" -w -o "-p 5432 -k /tmp" start
-pg_isready --host=/tmp --timeout=30
+pg_isready --host=/tmp --username=postgres --timeout=30
 
 # Create database if not exists
 if ! psql -U postgres -h /tmp -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1; then
