@@ -119,7 +119,22 @@ PostgreSQL data is stored in the app's persistent `/data/postgres` directory. Th
 
 ## Network
 
-The app exposes PostgreSQL on port **5432**. The `homeassistant` role can only connect from the HAOS app network. Optional roles (`homeassistant_ro`, `homeassistant_rw`, `postgres`) can be configured for internal or external access.
+By default, PostgreSQL is only accessible from within HAOS (other apps and HA core). The port is **not** exposed to your local network.
+
+### Internal access (default)
+
+HA and other apps connect using the hostname `d00de1c4-timescaledb` on port `5432`. No additional configuration needed.
+
+### External access (e.g. psql from laptop, Grafana on another machine)
+
+1. In the app's **Network** tab, set the host port to `5432` (or any available port)
+2. In the app's **Configuration** tab, set the role's network to `external` (e.g. `admin_network: external`)
+3. Restart the app
+4. Connect from your machine:
+   ```
+   psql "postgresql://postgres:PASSWORD@<RPI_IP>:5432/postgres"
+   ```
+   Replace `<RPI_IP>` with your Raspberry Pi's IP address and `PASSWORD` with the password from the app logs.
 
 ## Uninstalling
 
