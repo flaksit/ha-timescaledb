@@ -7,7 +7,7 @@ local   all       all                             trust
 host    all       all            127.0.0.1/32     scram-sha-256
 host    all       all            ::1/128          scram-sha-256
 
-# homeassistant role — always internal only (HAOS add-on network)
+# homeassistant role — always internal only (HAOS app network)
 host    all       homeassistant  172.30.32.0/23   scram-sha-256
 
 {{ if .enable_readonly }}

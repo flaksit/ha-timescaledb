@@ -1,25 +1,26 @@
-# Home Assistant TimescaleDB Add-on
+# Home Assistant TimescaleDB App
 
 [![License](https://img.shields.io/github/license/flaksit/hass-timescaledb-addon)](LICENSE)
 
-A Home Assistant add-on providing PostgreSQL 18 with [TimescaleDB](https://www.timescale.com/) 2.25 — a high-performance time-series database optimized for the Raspberry Pi 5.
+A Home Assistant app providing PostgreSQL 18 with [TimescaleDB](https://www.timescale.com/) 2.25 — a high-performance time-series database optimized for the Raspberry Pi 5.
 
 ## Features
 
 - PostgreSQL 18 with TimescaleDB 2.25 extension pre-loaded
 - Optimized defaults for Raspberry Pi 5 (4GB/8GB)
-- Configurable tuning via the add-on UI (shared_buffers, work_mem, etc.)
+- Configurable tuning via the app UI (shared_buffers, work_mem, etc.)
+- Role-based access control with auto-generated passwords
 - Proper process management with s6-overlay (graceful shutdown, signal handling)
 - Health monitoring via pg_isready watchdog
 
 ## Getting Started
 
-1. Add this repository to your Home Assistant add-on store:
+1. Add this repository to your Home Assistant app store:
 
    `https://github.com/flaksit/hass-timescaledb-addon`
 
-2. Install the "TimescaleDB" add-on
-3. Start the add-on
+2. Install the "TimescaleDB" app
+3. Start the app
 
 See the [full documentation](timescaledb/DOCS.md) for configuration options.
 

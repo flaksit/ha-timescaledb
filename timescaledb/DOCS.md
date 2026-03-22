@@ -1,15 +1,15 @@
-# TimescaleDB Add-on
+# TimescaleDB App
 
 PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performance time-series database optimized for the Raspberry Pi 5.
 
 ## Installation
 
-1. In Home Assistant, navigate to **Settings > Add-ons > Add-on Store**
+1. In Home Assistant, navigate to **Settings > Apps > App Store**
 2. Click the three-dot menu (top right) and select **Repositories**
 3. Add: `https://github.com/flaksit/hass-timescaledb-addon`
 4. Find "TimescaleDB" in the store and click **Install**
-5. Start the add-on — first startup initializes the database (this takes 30-60 seconds)
-6. Check the add-on logs to confirm: "Database 'homeassistant' with TimescaleDB ready"
+5. Start the app — first startup initializes the database (this takes 30-60 seconds)
+6. Check the app logs to confirm: "Database 'homeassistant' with TimescaleDB ready"
 
 ## Configuration
 
@@ -37,7 +37,7 @@ Other options can remain at defaults for most installations.
 
 ### Roles and Access Control
 
-The add-on manages PostgreSQL roles with per-role passwords and network access.
+The app manages PostgreSQL roles with per-role passwords and network access.
 
 #### homeassistant (always enabled)
 
@@ -47,9 +47,9 @@ The primary role used by HA's recorder. Owns the database with full DDL and DML 
 |--------|------|---------|-------------|
 | `ha_db_password` | string | *(auto-generated)* | Password for the `homeassistant` role. Leave empty to auto-generate on first start. |
 
-This role can only connect from within the HAOS add-on network (172.30.32.0/23). To configure HA's recorder:
+This role can only connect from within the HAOS app network (172.30.32.0/23). To configure HA's recorder:
 
-The add-on logs print the ready-to-use `db_url` on each start — copy it into `secrets.yaml`:
+The app logs print the ready-to-use `db_url` on each start — copy it into `secrets.yaml`:
 
 ```yaml
 # secrets.yaml
@@ -71,7 +71,7 @@ Read-only access to the database. Useful for Grafana dashboards or analytics too
 |--------|------|---------|-------------|
 | `enable_readonly` | bool | `false` | Create the `homeassistant_ro` role. |
 | `readonly_password` | string | *(auto-generated)* | Password for `homeassistant_ro`. Leave empty to auto-generate. |
-| `readonly_network` | string | `external` | `internal` = HAOS network only. `external` = any IP that can reach port 5432. |
+| `readonly_network` | string | `internal` | `internal` = HAOS network only. `external` = any IP that can reach port 5432. |
 
 #### homeassistant_rw (optional)
 
@@ -81,7 +81,7 @@ Read-write access (SELECT, INSERT, UPDATE, DELETE) without DDL privileges. For c
 |--------|------|---------|-------------|
 | `enable_readwrite` | bool | `false` | Create the `homeassistant_rw` role. |
 | `readwrite_password` | string | *(auto-generated)* | Password for `homeassistant_rw`. Leave empty to auto-generate. |
-| `readwrite_network` | string | `external` | `internal` = HAOS network only. `external` = any IP. |
+| `readwrite_network` | string | `internal` | `internal` = HAOS network only. `external` = any IP. |
 
 #### postgres / admin (optional)
 
@@ -91,7 +91,7 @@ Full superuser access via the built-in `postgres` role.
 |--------|------|---------|-------------|
 | `enable_admin` | bool | `false` | Set a password on the `postgres` superuser and allow remote access. |
 | `admin_password` | string | *(auto-generated)* | Password for `postgres`. Leave empty to auto-generate. |
-| `admin_network` | string | `external` | `internal` = HAOS network only. `external` = any IP. |
+| `admin_network` | string | `internal` | `internal` = HAOS network only. `external` = any IP. |
 
 > **Note:** The `postgres` superuser can always connect via local unix socket (inside the container) without a password. The `enable_admin` toggle controls whether it gets a password and remote access — useful for connecting with pgAdmin or psql from another machine.
 
@@ -107,42 +107,42 @@ Passwords are stored in `/data/secrets/` and persist across restarts:
 Password behavior:
 
 - **Empty field on first start:** A random 32-character password is generated and stored.
-- **Set a password:** Takes effect on the next **add-on** restart (no HA restart needed). The configured value is saved to the secrets file.
-- **Change a password:** Same as above — the new password is applied on add-on restart. If HA's `db_url` uses this role, you must also update `secrets.yaml` and restart HA.
+- **Set a password:** Takes effect on the next **app** restart (no HA restart needed). The configured value is saved to the secrets file.
+- **Change a password:** Same as above — the new password is applied on app restart. If HA's `db_url` uses this role, you must also update `secrets.yaml` and restart HA.
 - **Clear a previously set password:** The existing password from the secrets file is kept. Clearing the field does not generate a new password or remove the old one.
 
 ## Data Storage
 
-PostgreSQL data is stored in the add-on's persistent `/data/postgres` directory. This directory is:
+PostgreSQL data is stored in the app's persistent `/data/postgres` directory. This directory is:
 
-- **Preserved** across add-on restarts and updates
+- **Preserved** across app restarts and updates
 - **Excluded** from Home Assistant snapshots (too large for the snapshot format)
 
-> **Important:** This add-on's data is not included in HA backups. A dedicated backup solution will be configured in a later phase.
+> **Important:** This app's data is not included in HA backups. A dedicated backup solution will be configured in a later phase.
 
 ## Network
 
-The add-on exposes PostgreSQL on port **5432**. The `homeassistant` role can only connect from the HAOS add-on network. Optional roles (`homeassistant_ro`, `homeassistant_rw`, `postgres`) can be configured for internal or external access.
+The app exposes PostgreSQL on port **5432**. The `homeassistant` role can only connect from the HAOS app network. Optional roles (`homeassistant_ro`, `homeassistant_rw`, `postgres`) can be configured for internal or external access.
 
 ## Uninstalling
 
 1. If Home Assistant is using this database (`db_url` points here), switch the recorder back to SQLite first by removing the `db_url` from your `configuration.yaml` and restarting HA
-2. Stop the add-on
-3. Click **Uninstall** on the add-on page
+2. Stop the app
+3. Click **Uninstall** on the app page
 
-This removes the add-on and all PostgreSQL data in `/data/postgres`. The data cannot be recovered after uninstalling unless you have a separate backup.
+This removes the app and all PostgreSQL data in `/data/postgres`. The data cannot be recovered after uninstalling unless you have a separate backup.
 
-To also remove the repository, go to **Settings > Add-ons > Add-on Store** > three-dot menu > **Repositories** and delete the `https://github.com/flaksit/hass-timescaledb-addon` entry.
+To also remove the repository, go to **Settings > Apps > App Store** > three-dot menu > **Repositories** and delete the `https://github.com/flaksit/hass-timescaledb-addon` entry.
 
 ## Troubleshooting
 
-### Add-on fails to start
+### App fails to start
 
-Check the add-on logs for error messages. Common causes:
+Check the app logs for error messages. Common causes:
 
-- **Port 5432 in use:** Another add-on is using port 5432. Stop it or change the port mapping.
-- **Corrupt data directory:** If the add-on was force-killed, PostgreSQL may need recovery. Check logs for "database system was not shut down cleanly" — PostgreSQL handles this automatically on next start.
+- **Port 5432 in use:** Another app is using port 5432. Stop it or change the port mapping.
+- **Corrupt data directory:** If the app was force-killed, PostgreSQL may need recovery. Check logs for "database system was not shut down cleanly" — PostgreSQL handles this automatically on next start.
 
 ### Checking database status
 
-The add-on log shows "Database 'homeassistant' with TimescaleDB ready" on successful initialization. PostgreSQL logs are available in the add-on log viewer.
+The app log shows "Database 'homeassistant' with TimescaleDB ready" on successful initialization. PostgreSQL logs are available in the app log viewer.

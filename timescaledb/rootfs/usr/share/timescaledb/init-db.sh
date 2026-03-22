@@ -42,15 +42,15 @@ if [ ! -f "${PGDATA}/PG_VERSION" ]; then
     bashio::log.info "PostgreSQL cluster initialized."
 fi
 
-# Render postgresql.conf from add-on options
-bashio::log.info "Rendering postgresql.conf from add-on options..."
+# Render postgresql.conf from app options
+bashio::log.info "Rendering postgresql.conf from app options..."
 tempio \
     -conf /data/options.json \
     -template /etc/postgresql/postgresql.conf.tmpl \
     -out "${PGDATA}/postgresql.conf"
 
-# Render pg_hba.conf from add-on options (role-based access control)
-bashio::log.info "Rendering pg_hba.conf from add-on options..."
+# Render pg_hba.conf from app options (role-based access control)
+bashio::log.info "Rendering pg_hba.conf from app options..."
 tempio \
     -conf /data/options.json \
     -template /etc/postgresql/pg_hba.conf.tmpl \
@@ -151,10 +151,10 @@ if bashio::config.true 'enable_admin'; then
 fi
 
 # Log connection info
-ADDON_HOSTNAME=$(hostname)
+APP_HOSTNAME=$(hostname)
 bashio::log.info "---"
 bashio::log.info "Connection info:"
-bashio::log.info "  db_url: postgresql://homeassistant:PASSWORD@${ADDON_HOSTNAME}:5432/${DB_NAME}"
+bashio::log.info "  db_url: postgresql://homeassistant:PASSWORD@${APP_HOSTNAME}:5432/${DB_NAME}"
 bashio::log.info "  Passwords stored in: ${SECRETS_DIR}/"
 bashio::log.info "---"
 

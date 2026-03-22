@@ -1,11 +1,11 @@
-# Rendered by tempio from add-on options
+# Rendered by tempio from app options
 listen_addresses = '*'
 port = 5432
 
 # TimescaleDB MUST be in shared_preload_libraries
 shared_preload_libraries = 'timescaledb'
 
-# Tuning (from add-on options, RPi 5 defaults)
+# Tuning (from app options, RPi 5 defaults)
 shared_buffers = '{{ .shared_buffers }}'
 work_mem = '{{ .work_mem }}'
 effective_cache_size = '{{ .effective_cache_size }}'
