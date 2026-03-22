@@ -157,10 +157,22 @@ fi
 
 # Log connection info
 APP_HOSTNAME=$(hostname)
+HA_PW_LOG=$(cat "${SECRETS_DIR}/homeassistant_password")
 bashio::log.info "---"
-bashio::log.info "Connection info:"
-bashio::log.info "  db_url: postgresql://homeassistant:PASSWORD@${APP_HOSTNAME}:5432/${DB_NAME}"
-bashio::log.info "  Passwords stored in: ${SECRETS_DIR}/"
+bashio::log.info "Connection info (copy to secrets.yaml):"
+bashio::log.info "  db_url: postgresql://homeassistant:${HA_PW_LOG}@${APP_HOSTNAME}:5432/${DB_NAME}"
+if bashio::config.true 'enable_readonly'; then
+    RO_PW_LOG=$(cat "${SECRETS_DIR}/homeassistant_ro_password")
+    bashio::log.info "  homeassistant_ro: postgresql://homeassistant_ro:${RO_PW_LOG}@${APP_HOSTNAME}:5432/${DB_NAME}"
+fi
+if bashio::config.true 'enable_readwrite'; then
+    RW_PW_LOG=$(cat "${SECRETS_DIR}/homeassistant_rw_password")
+    bashio::log.info "  homeassistant_rw: postgresql://homeassistant_rw:${RW_PW_LOG}@${APP_HOSTNAME}:5432/${DB_NAME}"
+fi
+if bashio::config.true 'enable_admin'; then
+    ADMIN_PW_LOG=$(cat "${SECRETS_DIR}/postgres_password")
+    bashio::log.info "  postgres: postgresql://postgres:${ADMIN_PW_LOG}@${APP_HOSTNAME}:5432/${DB_NAME}"
+fi
 bashio::log.info "---"
 
 # Stop temporary PostgreSQL (the longrun service will start it properly)

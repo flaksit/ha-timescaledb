@@ -49,19 +49,19 @@ The primary role used by HA's recorder. Owns the database with full DDL and DML 
 
 This role can only connect from within the HAOS app network (172.30.32.0/23). To configure HA's recorder:
 
-The app logs print the ready-to-use `db_url` on each start — copy it into `secrets.yaml`:
+1. Open the app's **Log** tab — the ready-to-use `db_url` (with password) is printed on each start
+2. Copy the `db_url` into `secrets.yaml`:
+   ```yaml
+   # secrets.yaml
+   recorder_db_url: postgresql://homeassistant:ACTUAL_PASSWORD@d00de1c4-timescaledb:5432/homeassistant
+   ```
+3. Reference it in `configuration.yaml`:
+   ```yaml
+   recorder:
+     db_url: !secret recorder_db_url
+   ```
 
-```yaml
-# secrets.yaml
-recorder_db_url: postgresql://homeassistant:PASSWORD@HOSTNAME:5432/homeassistant
-```
-
-Then reference it in `configuration.yaml`:
-
-```yaml
-recorder:
-  db_url: !secret recorder_db_url
-```
+The hostname `d00de1c4-timescaledb` is stable across app updates, rebuilds, and restarts. It is derived from the repository URL and only changes if you remove and re-add the repository from a different URL.
 
 #### homeassistant_ro (optional)
 
@@ -97,12 +97,9 @@ Full superuser access via the built-in `postgres` role.
 
 ### Passwords
 
-Passwords are stored in `/data/secrets/` and persist across restarts:
+#### Retrieving passwords
 
-- `/data/secrets/homeassistant_password`
-- `/data/secrets/homeassistant_ro_password` (if enabled)
-- `/data/secrets/homeassistant_rw_password` (if enabled)
-- `/data/secrets/postgres_password` (if admin enabled)
+The easiest way to retrieve passwords is from the app's **Log** tab — connection strings with passwords are printed on each start.
 
 Password behavior:
 
