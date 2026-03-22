@@ -49,19 +49,19 @@ The primary role used by HA's recorder. Owns the database with full DDL and DML 
 
 This role can only connect from within the HAOS add-on network (172.30.32.0/23). To configure HA's recorder:
 
-1. Add the connection string to `secrets.yaml` (keeps the password out of git):
-   ```yaml
-   # secrets.yaml
-   recorder_db_url: postgresql://homeassistant:PASSWORD@ADDON_HOSTNAME:5432/homeassistant
-   ```
+The add-on logs print the ready-to-use `db_url` on each start — copy it into `secrets.yaml`:
 
-2. Reference it in `configuration.yaml`:
-   ```yaml
-   recorder:
-     db_url: !secret recorder_db_url
-   ```
+```yaml
+# secrets.yaml
+recorder_db_url: postgresql://homeassistant:PASSWORD@HOSTNAME:5432/homeassistant
+```
 
-The exact `db_url` (with hostname and password) is printed in the add-on logs on each start.
+Then reference it in `configuration.yaml`:
+
+```yaml
+recorder:
+  db_url: !secret recorder_db_url
+```
 
 #### ha_readonly (optional)
 
