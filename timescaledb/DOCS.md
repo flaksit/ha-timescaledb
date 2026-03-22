@@ -17,7 +17,7 @@ PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performa
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `databases` | string | `homeassistant` | Name of the PostgreSQL database to create. Change only if you need a custom database name. |
+| `database` | string | `homeassistant` | Name of the PostgreSQL database to create. Change only if you need a custom database name. |
 | `shared_buffers` | string | `256MB` | PostgreSQL shared memory. Increase to `512MB` if your Pi has 8GB RAM. |
 | `work_mem` | string | `32MB` | Memory per sort/hash operation. Default is sufficient for Home Assistant workloads. |
 | `effective_cache_size` | string | `768MB` | Planner hint for available OS cache. Set to ~75% of free RAM. |

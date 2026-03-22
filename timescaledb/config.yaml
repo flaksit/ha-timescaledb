@@ -19,7 +19,7 @@ backup_exclude:
 map:
   - backup:rw
 options:
-  databases: homeassistant
+  database: homeassistant
   shared_buffers: "256MB"
   work_mem: "32MB"
   effective_cache_size: "768MB"
@@ -36,7 +36,7 @@ options:
   admin_password: ""
   admin_network: internal
 schema:
-  databases: str
+  database: str
   shared_buffers: str
   work_mem: str
   effective_cache_size: str
@@ -52,3 +52,20 @@ schema:
   enable_admin: bool
   admin_password: "str?"
   admin_network: list(internal|external)
+descriptions:
+  database: Name of the PostgreSQL database to create
+  shared_buffers: "PostgreSQL shared memory (RPi 5 4GB: 256MB, 8GB: 512MB)"
+  work_mem: Memory per sort/hash operation
+  effective_cache_size: "Planner hint for OS cache size (RPi 5 4GB: 768MB, 8GB: 1536MB)"
+  max_connections: Maximum simultaneous database connections (HA typically uses 5-10)
+  log_level: PostgreSQL log verbosity
+  ha_db_password: "Password for the 'homeassistant' role (leave empty to auto-generate)"
+  enable_readonly: "Create 'homeassistant_ro' role with read-only access (SELECT only)"
+  readonly_password: "Password for 'homeassistant_ro' (leave empty to auto-generate)"
+  readonly_network: "Network access for 'homeassistant_ro' (internal = HAOS only, external = any IP)"
+  enable_readwrite: "Create 'homeassistant_rw' role with read-write access (no DDL)"
+  readwrite_password: "Password for 'homeassistant_rw' (leave empty to auto-generate)"
+  readwrite_network: "Network access for 'homeassistant_rw' (internal = HAOS only, external = any IP)"
+  enable_admin: "Set password on 'postgres' superuser and allow remote access"
+  admin_password: "Password for 'postgres' superuser (leave empty to auto-generate)"
+  admin_network: "Network access for 'postgres' (internal = HAOS only, external = any IP)"

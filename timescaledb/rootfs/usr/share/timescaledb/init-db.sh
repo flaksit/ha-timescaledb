@@ -3,7 +3,7 @@ set -euo pipefail
 
 PGDATA="/data/postgres"
 SECRETS_DIR="/data/secrets"
-DB_NAME=$(bashio::config 'databases')
+DB_NAME=$(bashio::config 'database')
 
 mkdir -p "${SECRETS_DIR}"
 
