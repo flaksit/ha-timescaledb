@@ -13,6 +13,8 @@ PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performa
 
 ## Configuration
 
+### Database Tuning
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `databases` | string | `homeassistant` | Name of the PostgreSQL database to create. Change only if you need a custom database name. |
@@ -22,7 +24,7 @@ PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performa
 | `max_connections` | int | `50` | Maximum simultaneous database connections. Home Assistant typically uses 5-10. |
 | `log_level` | string | `info` | PostgreSQL log verbosity. Options: trace, debug, info, notice, warning, error, fatal. |
 
-### RPi 5 Recommended Defaults
+#### RPi 5 Recommended Defaults
 
 The defaults are tuned for a Raspberry Pi 5 with 4GB RAM. If you have 8GB:
 
@@ -32,6 +34,70 @@ The defaults are tuned for a Raspberry Pi 5 with 4GB RAM. If you have 8GB:
 | `effective_cache_size` | `768MB` | `1536MB` |
 
 Other options can remain at defaults for most installations.
+
+### Roles and Access Control
+
+The add-on manages PostgreSQL roles with per-role passwords and network access.
+
+#### homeassistant (always enabled)
+
+The primary role used by HA's recorder. Owns the database with full DDL and DML privileges (required for HA schema migrations).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ha_db_password` | string | *(auto-generated)* | Password for the `homeassistant` role. Leave empty to auto-generate on first start. |
+
+This role can only connect from within the HAOS add-on network (172.30.32.0/23). To configure HA's recorder, add to `configuration.yaml`:
+
+```yaml
+recorder:
+  db_url: postgresql://homeassistant:PASSWORD@ADDON_HOSTNAME:5432/homeassistant
+```
+
+The exact `db_url` (with hostname) is printed in the add-on logs on each start.
+
+#### ha_readonly (optional)
+
+Read-only access to the database. Useful for Grafana dashboards or analytics tools.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_readonly` | bool | `false` | Create the `ha_readonly` role. |
+| `readonly_password` | string | *(auto-generated)* | Password for `ha_readonly`. Leave empty to auto-generate. |
+| `readonly_network` | string | `external` | `internal` = HAOS network only. `external` = any IP that can reach port 5432. |
+
+#### ha_readwrite (optional)
+
+Read-write access (SELECT, INSERT, UPDATE, DELETE) without DDL privileges. For custom integrations that need to write data.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_readwrite` | bool | `false` | Create the `ha_readwrite` role. |
+| `readwrite_password` | string | *(auto-generated)* | Password for `ha_readwrite`. Leave empty to auto-generate. |
+| `readwrite_network` | string | `external` | `internal` = HAOS network only. `external` = any IP. |
+
+#### postgres / admin (optional)
+
+Full superuser access via the built-in `postgres` role.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_admin` | bool | `false` | Set a password on the `postgres` superuser and allow remote access. |
+| `admin_password` | string | *(auto-generated)* | Password for `postgres`. Leave empty to auto-generate. |
+| `admin_network` | string | `external` | `internal` = HAOS network only. `external` = any IP. |
+
+> **Note:** Without `enable_admin`, the `postgres` superuser has no password and can only connect via local unix socket (inside the container).
+
+### Passwords
+
+Passwords are stored in `/data/secrets/` and persist across restarts:
+
+- `/data/secrets/homeassistant_password`
+- `/data/secrets/ha_readonly_password` (if enabled)
+- `/data/secrets/ha_readwrite_password` (if enabled)
+- `/data/secrets/postgres_password` (if admin enabled)
+
+If you set a password in the configuration, it takes effect on the next restart. If you leave the password field empty, a random 32-character password is generated on first creation and reused on subsequent restarts.
 
 ## Data Storage
 
@@ -44,7 +110,7 @@ PostgreSQL data is stored in the add-on's persistent `/data/postgres` directory.
 
 ## Network
 
-The add-on exposes PostgreSQL on port **5432**. By default, connections are accepted from the Home Assistant network using `scram-sha-256` authentication.
+The add-on exposes PostgreSQL on port **5432**. The `homeassistant` role can only connect from the HAOS add-on network. Optional roles (`ha_readonly`, `ha_readwrite`, `postgres`) can be configured for internal or external access.
 
 ## Uninstalling
 

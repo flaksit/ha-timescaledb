@@ -1,0 +1,41 @@
+# TYPE  DATABASE  USER           ADDRESS          METHOD
+
+# Local unix socket — used by init scripts and postgres user
+local   all       all                             trust
+
+# Loopback
+host    all       all            127.0.0.1/32     scram-sha-256
+host    all       all            ::1/128          scram-sha-256
+
+# homeassistant role — always internal only (HAOS add-on network)
+host    all       homeassistant  172.30.32.0/23   scram-sha-256
+
+{{ if .enable_readonly }}
+# ha_readonly role
+{{ if eq .readonly_network "internal" }}
+host    all       ha_readonly    172.30.32.0/23   scram-sha-256
+{{ else }}
+host    all       ha_readonly    0.0.0.0/0        scram-sha-256
+host    all       ha_readonly    ::/0             scram-sha-256
+{{ end }}
+{{ end }}
+
+{{ if .enable_readwrite }}
+# ha_readwrite role
+{{ if eq .readwrite_network "internal" }}
+host    all       ha_readwrite   172.30.32.0/23   scram-sha-256
+{{ else }}
+host    all       ha_readwrite   0.0.0.0/0        scram-sha-256
+host    all       ha_readwrite   ::/0             scram-sha-256
+{{ end }}
+{{ end }}
+
+{{ if .enable_admin }}
+# postgres superuser
+{{ if eq .admin_network "internal" }}
+host    all       postgres       172.30.32.0/23   scram-sha-256
+{{ else }}
+host    all       postgres       0.0.0.0/0        scram-sha-256
+host    all       postgres       ::/0             scram-sha-256
+{{ end }}
+{{ end }}

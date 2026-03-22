@@ -25,6 +25,16 @@ options:
   effective_cache_size: "768MB"
   max_connections: 50
   log_level: info
+  ha_db_password: ""
+  enable_readonly: false
+  readonly_password: ""
+  readonly_network: external
+  enable_readwrite: false
+  readwrite_password: ""
+  readwrite_network: external
+  enable_admin: false
+  admin_password: ""
+  admin_network: external
 schema:
   databases: str
   shared_buffers: str
@@ -32,3 +42,13 @@ schema:
   effective_cache_size: str
   max_connections: int(10,500)
   log_level: list(trace|debug|info|notice|warning|error|fatal)
+  ha_db_password: "str?"
+  enable_readonly: bool
+  readonly_password: "str?"
+  readonly_network: list(internal|external)
+  enable_readwrite: bool
+  readwrite_password: "str?"
+  readwrite_network: list(internal|external)
+  enable_admin: bool
+  admin_password: "str?"
+  admin_network: list(internal|external)
