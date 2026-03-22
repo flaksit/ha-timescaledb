@@ -10,7 +10,10 @@ ENV \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
-# Install s6-overlay (MUST use -p flag to preserve permissions — Pitfall 1)
+# Install build dependencies (Alpine base image has wget but not curl or xz)
+RUN apk add --no-cache curl xz jq
+
+# Install s6-overlay (MUST use -p flag to preserve permissions)
 RUN set -eux; \
     case "${TARGETARCH}" in \
       "amd64") S6_ARCH="x86_64" ;; \
