@@ -46,6 +46,16 @@ PostgreSQL data is stored in the add-on's persistent `/data/postgres` directory.
 
 The add-on exposes PostgreSQL on port **5432**. By default, connections are accepted from the Home Assistant network using `scram-sha-256` authentication.
 
+## Uninstalling
+
+1. If Home Assistant is using this database (`db_url` points here), switch the recorder back to SQLite first by removing the `db_url` from your `configuration.yaml` and restarting HA
+2. Stop the add-on
+3. Click **Uninstall** on the add-on page
+
+This removes the add-on and all PostgreSQL data in `/data/postgres`. The data cannot be recovered after uninstalling unless you have a separate backup.
+
+To also remove the repository, go to **Settings > Add-ons > Add-on Store** > three-dot menu > **Repositories** and delete the `https://github.com/flaksit/hass-timescaledb-addon` entry.
+
 ## Troubleshooting
 
 ### Add-on fails to start
