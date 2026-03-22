@@ -8,7 +8,7 @@ arch:
 startup: system
 init: false
 ports:
-  5432/tcp: 5432
+  5432/tcp: null
 ports_description:
   5432/tcp: PostgreSQL
 timeout: 60
