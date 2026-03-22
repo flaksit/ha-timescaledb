@@ -1,2 +1,2 @@
-#!/usr/bin/with-contenv bashio
+#!/command/with-contenv bashio
 exec chpst -u postgres postgres -D /data/postgres -k /tmp

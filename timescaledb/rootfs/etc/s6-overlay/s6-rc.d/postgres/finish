@@ -1,2 +1,2 @@
-#!/usr/bin/with-contenv bashio
+#!/command/with-contenv bashio
 bashio::log.info "PostgreSQL service stopped with exit code ${1}"
