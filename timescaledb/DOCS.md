@@ -136,6 +136,96 @@ HA and other apps connect using the hostname `d00de1c4-timescaledb` on port `543
    ```
    Replace `<RPI_IP>` with your Raspberry Pi's IP address and `PASSWORD` with the password from the app logs.
 
+## Migrating from SQLite
+
+If you have an existing Home Assistant installation using SQLite, you can migrate all historical data to this PostgreSQL database. The migration runs while HA continues to use SQLite — there is no downtime until the final cutover.
+
+### Prerequisites
+
+- This TimescaleDB app installed and running (see Installation above)
+- SSH access to the HAOS host (`ssh ha`)
+- The migration tooling from the [paradise-ha](https://github.com/flaksit/paradise-ha) repository
+
+### Overview
+
+The migration happens in two phases:
+
+1. **Bulk pre-copy** (this section): copies all historical data while HA keeps running on SQLite. Takes ~40 minutes for a 63M-row states table on RPi 5.
+2. **Cutover** (Phase 3): brief HA stop, copy final delta rows, switch recorder to PostgreSQL, restart HA. Target: under 5 minutes downtime.
+
+### Step 1: Prepare the schema
+
+The migration container includes a `reset-schema.sh` script that drops and recreates the PostgreSQL schema:
+
+```bash
+# Transfer migration files to Pi
+cd paradise-ha
+tar cf - scripts/migrate/Dockerfile scripts/migrate/.dockerignore \
+  scripts/migrate/migrate.py scripts/migrate/pyproject.toml \
+  scripts/migrate/uv.lock scripts/migrate/reset-schema.sh \
+  scripts/migrate/schema/ha_schema.sql \
+  | ssh ha "mkdir -p /tmp/ha-migrate && tar xf - --strip-components=2 -C /tmp/ha-migrate"
+
+# Apply schema
+ssh ha "bash /tmp/ha-migrate/reset-schema.sh"
+```
+
+### Step 2: Build the migration container
+
+```bash
+ssh ha "cd /tmp/ha-migrate && docker build -t ha-migrate:latest ."
+```
+
+This builds a Python 3.14 Alpine container with the migration script and psycopg3.
+
+### Step 3: Run smoke test
+
+```bash
+PG_PASS=$(ssh ha "docker exec addon_d00de1c4_timescaledb cat /data/secrets/homeassistant_password")
+
+ssh ha "docker run --rm --network hassio \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db:/data/home-assistant_v2.db:ro \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-shm:/data/home-assistant_v2.db-shm:ro \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-wal:/data/home-assistant_v2.db-wal:ro \
+  -e SQLITE_PATH=/data/home-assistant_v2.db \
+  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@172.30.33.5:5432/homeassistant' \
+  ha-migrate:latest --smoke-test 3000 --skip-mutable"
+```
+
+The smoke test copies a small subset of data and runs exhaustive row-by-row verification. It should exit with `RESULT: SUCCESS`.
+
+### Step 4: Reset and run full migration
+
+```bash
+# Reset schema (clears smoke test data)
+ssh ha "bash /tmp/ha-migrate/reset-schema.sh"
+
+# Full migration
+ssh ha "docker run --rm --network hassio \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db:/data/home-assistant_v2.db:ro \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-shm:/data/home-assistant_v2.db-shm:ro \
+  -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-wal:/data/home-assistant_v2.db-wal:ro \
+  -e SQLITE_PATH=/data/home-assistant_v2.db \
+  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@172.30.33.5:5432/homeassistant' \
+  ha-migrate:latest --skip-mutable --batch-size 10000"
+```
+
+The `--skip-mutable` flag ensures rows that HA is actively updating (current state per entity, open recorder run) are handled correctly: they are copied, verified, then deleted from PG and stored in `_migrate_excluded` for the cutover phase to re-copy with final values.
+
+### Verification
+
+The migration script performs automatic verification after each pass:
+
+- **Row counts**: exact match between SQLite and PG for every copied PK range
+- **PK hash**: streaming MD5 of ordered primary keys catches swapped/duplicate/missing rows
+- **Exhaustive comparison** (smoke test only): column-by-column 1-on-1 comparison
+
+The script exits with code 0 on success, 1 on any mismatch.
+
+### After bulk pre-copy
+
+Do **not** switch HA to PostgreSQL yet. The bulk pre-copy leaves ~380 mutable tip rows in `_migrate_excluded` — these will be re-copied during the Phase 3 cutover when HA is briefly stopped.
+
 ## Uninstalling
 
 1. If Home Assistant is using this database (`db_url` points here), switch the recorder back to SQLite first by removing the `db_url` from your `configuration.yaml` and restarting HA
