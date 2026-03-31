@@ -119,7 +119,7 @@ if bashio::config.true 'enable_readonly'; then
         GRANT CONNECT ON DATABASE "${DB_NAME}" TO homeassistant_ro;
         GRANT USAGE ON SCHEMA public TO homeassistant_ro;
         GRANT SELECT ON ALL TABLES IN SCHEMA public TO homeassistant_ro;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO homeassistant_ro;
+        ALTER DEFAULT PRIVILEGES FOR ROLE homeassistant IN SCHEMA public GRANT SELECT ON TABLES TO homeassistant_ro;
 EOSQL
     bashio::log.info "Role 'homeassistant_ro' ready."
 fi
@@ -142,8 +142,8 @@ if bashio::config.true 'enable_readwrite'; then
         GRANT USAGE ON SCHEMA public TO homeassistant_rw;
         GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO homeassistant_rw;
         GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO homeassistant_rw;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO homeassistant_rw;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO homeassistant_rw;
+        ALTER DEFAULT PRIVILEGES FOR ROLE homeassistant IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO homeassistant_rw;
+        ALTER DEFAULT PRIVILEGES FOR ROLE homeassistant IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO homeassistant_rw;
 EOSQL
     bashio::log.info "Role 'homeassistant_rw' ready."
 fi
