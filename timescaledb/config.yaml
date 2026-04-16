@@ -1,5 +1,5 @@
 name: TimescaleDB
-version: "0.2.0"
+version: "1.0.1"
 slug: timescaledb
 description: PostgreSQL 18 + TimescaleDB 2.25 time-series database for Home Assistant
 url: https://github.com/flaksit/ha-timescaledb

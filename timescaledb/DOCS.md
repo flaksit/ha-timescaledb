@@ -35,6 +35,20 @@ The defaults are tuned for a Raspberry Pi 5 with 4GB RAM. If you have 8GB:
 
 Other options can remain at defaults for most installations.
 
+### JIT compilation
+
+PostgreSQL's LLVM JIT is **disabled** in this app (`jit = off` in `postgresql.conf`). Home Assistant and Grafana workloads are dashboard-speed (seconds, not minutes) and dominated by decompression and aggregation over time-series chunks, not per-row CPU. In that regime the JIT's 1–3 s LLVM compile cost is pure overhead.
+
+Measured on a real HA dataset (1.5M rows, 154k output buckets): 3.3 s with `jit = off` vs 5.9 s with `jit = on`.
+
+For ad-hoc analytical queries that actually benefit from JIT, opt in per session:
+
+```sql
+SET jit = on;
+SET jit_above_cost = 50000;
+-- your long-running analytical query
+```
+
 ### Roles and Access Control
 
 The app manages PostgreSQL roles with per-role passwords and network access.
