@@ -33,3 +33,19 @@ lc_messages = 'en_US.UTF-8'
 lc_monetary = 'en_US.UTF-8'
 lc_numeric = 'en_US.UTF-8'
 lc_time = 'en_US.UTF-8'
+
+# Archive mode — gated on backup_enabled. NOTE: archive_mode is a postmaster-level
+# parameter; changes require a PG restart (not reload). Rendered before each boot.
+{{ if .backup_enabled }}
+archive_mode = on
+# Use the full /usr/bin/ path — on Alpine, /bin/sh is busybox ash which strips
+# PATH to a minimal set in PG's archive_command subshell. A bare `pgbackrest`
+# resolves as "command not found" in that context.
+archive_command = '/usr/bin/pgbackrest --stanza=timescaledb archive-push %p'
+archive_timeout = {{ .archive_timeout_seconds }}
+{{ else }}
+archive_mode = off
+{{ end }}
+
+# WAL compression — helps WAL streaming regardless of backup (zstd added in PG 15+)
+wal_compression = zstd

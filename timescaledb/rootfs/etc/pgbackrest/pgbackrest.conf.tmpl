@@ -1,0 +1,54 @@
+# Rendered by tempio from /data/options.json — DO NOT edit in-container;
+# edit the .tmpl in rootfs/etc/pgbackrest/ and rebuild the image.
+#
+# Secrets (cipher passphrases in /data/secrets/pgbackrest_cipher_pass_repo[12])
+# are injected at pgbackrest invocation time via PGBACKREST_REPO[12]_CIPHER_PASS
+# env vars — tempio cannot read /data/secrets/, only /data/options.json.
+# SSH private keys and known_hosts are referenced by absolute path below
+# (pgbackrest opens them directly as postgres UID).
+
+[global]
+log-level-console=info
+log-level-file=off
+log-path=/var/log/pgbackrest
+compress-type=zst
+compress-level=3
+process-max=2
+repo-block=y
+repo-bundle=y
+archive-copy=y
+
+[timescaledb]
+pg1-path=/data/postgres
+
+{{ if .repo1_sftp_host }}
+# repo1 — rolling operational backups (3y monthly fulls + 1y weekly diffs + incr)
+repo1-type=sftp
+repo1-path={{ .repo1_sftp_path }}
+repo1-sftp-host={{ .repo1_sftp_host }}
+repo1-sftp-host-port={{ .repo1_sftp_port }}
+repo1-sftp-host-user={{ .repo1_sftp_user }}
+repo1-sftp-host-key-check-type=strict
+repo1-sftp-known-host-file=/data/secrets/pgbackrest_known_hosts_repo1
+repo1-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo1
+repo1-cipher-type=aes-256-cbc
+repo1-retention-full-type=time
+repo1-retention-full=1095
+repo1-retention-diff-type=time
+repo1-retention-diff=365
+repo1-retention-archive-type=incr
+repo1-retention-archive=1
+{{ end }}
+
+{{ if .repo2_sftp_host }}
+# repo2 — annual archival (unlimited retention — manual preservation forever)
+repo2-type=sftp
+repo2-path={{ .repo2_sftp_path }}
+repo2-sftp-host={{ .repo2_sftp_host }}
+repo2-sftp-host-port={{ .repo2_sftp_port }}
+repo2-sftp-host-user={{ .repo2_sftp_user }}
+repo2-sftp-host-key-check-type=strict
+repo2-sftp-known-host-file=/data/secrets/pgbackrest_known_hosts_repo2
+repo2-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo2
+repo2-cipher-type=aes-256-cbc
+{{ end }}
