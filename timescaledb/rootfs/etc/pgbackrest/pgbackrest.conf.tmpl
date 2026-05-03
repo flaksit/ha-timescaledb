@@ -14,15 +14,14 @@ log-path=/var/log/pgbackrest
 compress-type=zst
 compress-level=3
 process-max=2
-repo-block=y
-repo-bundle=y
+# archive-copy: store WAL alongside each backup for faster single-backup PITR
 archive-copy=y
 
 [timescaledb]
 pg1-path=/data/postgres
 
 {{ if .repo1_sftp_host }}
-# repo1 — rolling operational backups (3y monthly fulls + 1y weekly diffs + incr)
+# repo1 — rolling operational backups (3y monthly fulls + weekly diffs + incr)
 repo1-type=sftp
 repo1-path={{ .repo1_sftp_path }}
 repo1-sftp-host={{ .repo1_sftp_host }}
@@ -32,9 +31,11 @@ repo1-sftp-host-key-check-type=strict
 repo1-sftp-known-hosts-file=/data/secrets/pgbackrest_known_hosts_repo1
 repo1-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo1
 repo1-cipher-type=aes-256-cbc
+repo1-bundle=y
+repo1-block=y
 repo1-retention-full-type=time
 repo1-retention-full=1095
-repo1-retention-diff-type=time
+# repo1-retention-diff is count-based (pgBackRest has no time-based diff retention)
 repo1-retention-diff=365
 repo1-retention-archive-type=incr
 repo1-retention-archive=1
@@ -51,4 +52,6 @@ repo2-sftp-host-key-check-type=strict
 repo2-sftp-known-hosts-file=/data/secrets/pgbackrest_known_hosts_repo2
 repo2-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo2
 repo2-cipher-type=aes-256-cbc
+repo2-bundle=y
+repo2-block=y
 {{ end }}
