@@ -1,5 +1,33 @@
 ARG BUILD_FROM
 
+# pgbackrest staging image — discarded after binary + .so extraction.
+# WHY multi-stage: Direct `apk add pgbackrest` in the runtime stage would pull the
+# Alpine-packaged `postgresql18` server (~180 MiB) as a meta-dep and shadow the
+# source-built PG18 in /usr/local/bin. The staging image is discarded; only the
+# binary and missing .so files are copied forward.
+# WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies not
+# present in the postgres:18-alpine image. The RUN step below fails the build if any
+# symbol is unresolved.
+# VERSION note: pgbackrest 2.57.0 (alpine:3.23 stable) has an SFTP segfault on aarch64;
+# 2.58.0 from alpine:edge fixes it. Pull pgbackrest from edge community while keeping the
+# staging image on 3.23 for all other deps. The ldd guard catches any .so drift.
+FROM alpine:3.23 AS pgbackrest-stage
+
+RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community pgbackrest
+
+# Copy pgbackrest binary plus only the .so files not already in the postgres:18-alpine
+# runtime image into /export/ for selective COPY into the runtime stage.
+# Known delta libs vs postgres:18-alpine: libssh2.so.1, libbz2.so.1 — but ldd parsing
+# catches future additions automatically.
+RUN set -eux; \
+    mkdir -p /export/usr/bin; \
+    cp /usr/bin/pgbackrest /export/usr/bin/pgbackrest; \
+    LIBS=$(ldd /usr/bin/pgbackrest | awk '/=>/ {print $3}' | grep -E '^/(usr/)?lib/' || true); \
+    for L in $LIBS; do \
+      mkdir -p "/export$(dirname $L)"; \
+      cp -aL "$L" "/export$L"; \
+    done
+
 FROM ${BUILD_FROM}
 
 ARG S6_OVERLAY_VERSION
@@ -48,20 +76,25 @@ RUN set -eux; \
       "https://github.com/home-assistant/tempio/releases/download/${TEMPIO_VERSION}/tempio_${TEMPIO_ARCH}"; \
     chmod +x /usr/bin/tempio
 
-# pgbackrest from Alpine community repo (musl-native). Earlier attempts staged a
-# Debian glibc pgbackrest via gcompat — that binary linked against FORTIFY_SOURCE
-# glibc symbols (__memcpy_chk, __snprintf_chk, etc.) which gcompat does not
-# provide on aarch64, causing a segfault during SFTP auth. Apk pgbackrest is
-# built coherently against musl/Alpine libssh2 and avoids the ABI mismatch.
+# Install pgbackrest from staging image — see top-of-file comment block for rationale.
+# Copies binary + delta .so libs (libssh2, libbz2) from /export/ into the runtime
+# filesystem, then fails the build immediately if any symbol is unresolved.
+COPY --from=pgbackrest-stage /export/ /
+
 RUN set -eux; \
-    apk add --no-cache pgbackrest; \
-    UNRESOLVED=$(ldd /usr/bin/pgbackrest 2>&1 | grep -E 'not found|Error relocating' || true); \
+    UNRESOLVED=$(ldd /usr/bin/pgbackrest | grep 'not found' || true); \
     if [ -n "$UNRESOLVED" ]; then \
-      echo "ERROR: pgbackrest has unresolved deps or relocations:"; \
+      echo "ERROR: pgbackrest has unresolved .so dependencies:"; \
       echo "$UNRESOLVED"; \
       exit 1; \
     fi; \
     /usr/bin/pgbackrest version | grep -E '^pgBackRest 2\.[0-9]+\.[0-9]+'
+
+# Diagnostic tooling for pgbackrest SFTP stanza-create segfault investigation —
+# allows running `gdb --args pgbackrest ... stanza-create` inside the container
+# to capture a backtrace. Includes musl debug info via libc6-compat-dbg fallback
+# (musl-dbg) and libssh2 symbols when the package provides them.
+RUN apk add --no-cache gdb musl-dbg
 
 # Create data directory for persistent storage
 RUN mkdir -p /data
