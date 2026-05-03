@@ -19,6 +19,8 @@ archive-copy=y
 
 [timescaledb]
 pg1-path=/data/postgres
+# Alpine PG uses /tmp for the Unix socket, not the default /var/run/postgresql
+pg1-socket-path=/tmp
 
 {{ if .repo1_sftp_host }}
 # repo1 — rolling operational backups (3y monthly fulls + weekly diffs + incr)
