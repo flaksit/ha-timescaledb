@@ -279,9 +279,13 @@ if bashio::config.true 'backup_enabled'; then
     # local is only valid inside functions; use plain vars at script top level.
     # Prefix with _ to signal these are internal to the pgbackrest block.
     _backup_any_success=false
+
+    # Phase 1: per-repo secrets check and cipher generation.
+    # stanza-create does NOT accept --repo (it operates on ALL configured repos at once),
+    # so this loop only validates secrets and accumulates ready repos — stanza-create runs
+    # once below after all repos are checked.
+    _repos_ready=0
     for REPO_ID in repo1 repo2; do
-        # Derive numeric repo index from name ("repo1" → "1", "repo2" → "2")
-        REPO_NUM="${REPO_ID#repo}"
         SFTP_HOST=$(bashio::config "${REPO_ID}_sftp_host")
 
         if [ -z "${SFTP_HOST}" ]; then
@@ -291,7 +295,6 @@ if bashio::config.true 'backup_enabled'; then
 
         # Auto-generate cipher passphrase (idempotent: never overwrites an existing file)
         ensure_cipher_passphrase "${REPO_ID}"
-        CIPHER_FILE="${SECRETS_DIR}/pgbackrest_cipher_pass_${REPO_ID}"
         KEY_FILE="${SECRETS_DIR}/pgbackrest_id_ed25519_${REPO_ID}"
         KNOWN_FILE="${SECRETS_DIR}/pgbackrest_known_hosts_${REPO_ID}"
 
@@ -309,67 +312,71 @@ if bashio::config.true 'backup_enabled'; then
         # Enforce 600 on user-provided files (user may have copied them with looser perms)
         chmod 600 "${KEY_FILE}" "${KNOWN_FILE}"
         chown postgres:postgres "${KEY_FILE}" "${KNOWN_FILE}"
-
-        # Verify PG is ready before stanza-create (PG was started above; this is a belt-and-suspenders check)
-        if ! pg_isready --host=/tmp --username=postgres --timeout=30 >/dev/null 2>&1; then
-            notify_supervisor "pgBackRest ${REPO_ID} pre-check failed" \
-                "PostgreSQL was not ready before stanza-create attempt. Restart the app to retry."
-            bashio::log.error "pgBackRest ${REPO_ID}: PG not ready — skipping stanza-create"
-            continue
-        fi
-
-        # stanza-create with retry: 3 attempts, pre-attempt delays of 0s / 30s / 120s.
-        # Only transient errors are retried; non-transient errors abort immediately.
-        _stanza_ok=false
-        _attempt=0
-        _stderr_file=$(mktemp)
-        for _delay in 0 30 120; do
-            _attempt=$(( _attempt + 1 ))
-            [ "${_delay}" -gt 0 ] && sleep "${_delay}"
-
-            bashio::log.info "pgBackRest ${REPO_ID}: stanza-create attempt ${_attempt}/3..."
-            _exit_code=0
-            # Inject cipher passphrase via env var — pgbackrest accepts PGBACKREST_REPO<N>_CIPHER_PASS.
-            # The passphrase MUST NOT appear in pgbackrest.conf (tempio cannot read /data/secrets/),
-            # and MUST NOT be logged — the env var is scoped to this single invocation only.
-            env "PGBACKREST_REPO${REPO_NUM}_CIPHER_PASS=$(cat "${CIPHER_FILE}")" \
-                gosu postgres /usr/bin/pgbackrest \
-                --stanza=timescaledb \
-                --repo="${REPO_NUM}" \
-                stanza-create 2>"${_stderr_file}" || _exit_code=$?
-
-            if [ "${_exit_code}" -eq 0 ]; then
-                bashio::log.info "pgBackRest ${REPO_ID}: stanza-create OK (attempt ${_attempt})"
-                _stanza_ok=true
-                break
-            fi
-
-            _classification=$(classify_pgbackrest_error "${_exit_code}" "${_stderr_file}")
-            _stderr_tail=$(tail -c 1024 "${_stderr_file}" 2>/dev/null || true)
-
-            if [ "${_classification}" = "non-transient" ]; then
-                notify_supervisor \
-                    "pgBackRest ${REPO_ID} stanza-create failed (non-transient)" \
-                    "Exit ${_exit_code}. Last error: ${_stderr_tail}. Fix secrets/SSH key/host and restart."
-                bashio::log.error "pgBackRest ${REPO_ID}: non-transient error (exit ${_exit_code}) — not retrying"
-                break
-            fi
-
-            if [ "${_attempt}" -eq 3 ]; then
-                notify_supervisor \
-                    "pgBackRest ${REPO_ID} stanza-create failed (retries exhausted)" \
-                    "Exit ${_exit_code} after 3 attempts. Last error: ${_stderr_tail}. Fix connectivity and restart."
-                bashio::log.error "pgBackRest ${REPO_ID}: stanza-create failed after 3 attempts (exit ${_exit_code})"
-            else
-                bashio::log.warning "pgBackRest ${REPO_ID}: transient error (exit ${_exit_code}), retrying..."
-            fi
-        done
-        rm -f "${_stderr_file}"
-
-        if [ "${_stanza_ok}" = "true" ]; then
-            _backup_any_success=true
-        fi
+        _repos_ready=$(( _repos_ready + 1 ))
     done
+
+    # Phase 2: stanza-create once for all configured repos.
+    # pgBackRest 2.57+ does not accept --repo on stanza-create; it always operates on all
+    # repos defined in pgbackrest.conf. Both cipher passphrases are injected via env vars
+    # (files may be absent for unconfigured repos — 2>/dev/null returns empty string, which
+    # pgBackRest ignores for repos not present in the config).
+    if [ "${_repos_ready}" -gt 0 ]; then
+        if ! pg_isready --host=/tmp --username=postgres --timeout=30 >/dev/null 2>&1; then
+            notify_supervisor "pgBackRest pre-check failed" \
+                "PostgreSQL was not ready before stanza-create attempt. Restart the app to retry."
+            bashio::log.error "pgBackRest: PG not ready — skipping stanza-create"
+        else
+            _stanza_ok=false
+            _attempt=0
+            _stderr_file=$(mktemp)
+            for _delay in 0 30 120; do
+                _attempt=$(( _attempt + 1 ))
+                [ "${_delay}" -gt 0 ] && sleep "${_delay}"
+
+                bashio::log.info "pgBackRest: stanza-create attempt ${_attempt}/3..."
+                _exit_code=0
+                # Inject all cipher passphrases; pgbackrest uses only those matching
+                # repos present in the rendered pgbackrest.conf.
+                env \
+                    "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
+                    "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
+                    gosu postgres /usr/bin/pgbackrest \
+                    --stanza=timescaledb \
+                    stanza-create 2>"${_stderr_file}" || _exit_code=$?
+
+                if [ "${_exit_code}" -eq 0 ]; then
+                    bashio::log.info "pgBackRest: stanza-create OK (attempt ${_attempt})"
+                    _stanza_ok=true
+                    break
+                fi
+
+                _classification=$(classify_pgbackrest_error "${_exit_code}" "${_stderr_file}")
+                _stderr_tail=$(tail -c 1024 "${_stderr_file}" 2>/dev/null || true)
+
+                if [ "${_classification}" = "non-transient" ]; then
+                    notify_supervisor \
+                        "pgBackRest stanza-create failed (non-transient)" \
+                        "Exit ${_exit_code}. Last error: ${_stderr_tail}. Fix secrets/SSH key/host and restart."
+                    bashio::log.error "pgBackRest: non-transient error (exit ${_exit_code}) — not retrying"
+                    break
+                fi
+
+                if [ "${_attempt}" -eq 3 ]; then
+                    notify_supervisor \
+                        "pgBackRest stanza-create failed (retries exhausted)" \
+                        "Exit ${_exit_code} after 3 attempts. Last error: ${_stderr_tail}. Fix connectivity and restart."
+                    bashio::log.error "pgBackRest: stanza-create failed after 3 attempts (exit ${_exit_code})"
+                else
+                    bashio::log.warning "pgBackRest: transient error (exit ${_exit_code}), retrying..."
+                fi
+            done
+            rm -f "${_stderr_file}"
+
+            if [ "${_stanza_ok}" = "true" ]; then
+                _backup_any_success=true
+            fi
+        fi
+    fi
 
     # Fail-safe archive_mode degrade: if every configured repo failed stanza-create, disable WAL
     # archiving for this boot by patching the rendered postgresql.conf. This prevents unbounded WAL
