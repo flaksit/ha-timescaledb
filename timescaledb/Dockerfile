@@ -1,42 +1,5 @@
 ARG BUILD_FROM
 
-# pgbackrest staging image — uses Debian bookworm (glibc), NOT Alpine (musl).
-# WHY Debian: Alpine's musl libc causes a segfault in pgBackRest's libssh2 SFTP
-# code on aarch64 (confirmed: same pgBackRest 2.58.0 binary crashes on Alpine/musl,
-# runs cleanly on Debian/glibc). The root cause is in musl's threading or memory
-# model interacting with libssh2's SFTP write path. Switching the staging image to
-# Debian and running the glibc binary on Alpine via `gcompat` is the fix.
-# WHY gcompat: Alpine's `gcompat` package ships the glibc ABI compatibility layer
-# (ld-linux-aarch64.so.1 + libgcompat.so.0), allowing glibc-compiled binaries to
-# run on musl Alpine without a full glibc installation.
-# WHY multi-stage copy: imports glibc pgbackrest + its .so deps (libssh2, libssl,
-# libpq, etc.) into the runtime image. The ldd guard catches any unresolved symbols.
-FROM debian:bookworm-slim AS pgbackrest-stage
-
-RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends curl gnupg2 ca-certificates && \
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-      gpg --dearmor -o /usr/share/keyrings/pgdg.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
-      > /etc/apt/sources.list.d/pgdg.list && \
-    apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends pgbackrest
-
-# Export pgbackrest binary + all its glibc .so dependencies + the glibc dynamic
-# linker (ld-linux-aarch64.so.1). gcompat on the runtime provides the linker shim,
-# but the actual glibc .so files must be present for the binary to link correctly.
-RUN set -eux; \
-    mkdir -p /export/usr/bin /export/lib; \
-    cp /usr/bin/pgbackrest /export/usr/bin/pgbackrest; \
-    LIBS=$(ldd /usr/bin/pgbackrest | awk '/=>/ {print $3}' | grep -E '^/(usr/)?lib/' || true); \
-    for L in $LIBS; do \
-      [ -f "$L" ] || continue; \
-      mkdir -p "/export$(dirname $L)"; \
-      cp -aL "$L" "/export$L"; \
-    done; \
-    cp -aL /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /export/lib/ 2>/dev/null || \
-    find /lib -name 'ld-linux-aarch64.so*' -exec cp -aL {} /export/lib/ \;
-
 FROM ${BUILD_FROM}
 
 ARG S6_OVERLAY_VERSION
@@ -85,17 +48,16 @@ RUN set -eux; \
       "https://github.com/home-assistant/tempio/releases/download/${TEMPIO_VERSION}/tempio_${TEMPIO_ARCH}"; \
     chmod +x /usr/bin/tempio
 
-# gcompat: glibc ABI compatibility layer for Alpine — required to run the
-# Debian-compiled (glibc) pgbackrest binary. Provides ld-linux-aarch64.so.1 shim.
-RUN apk add --no-cache gcompat
-
-# Install pgbackrest from Debian staging image — see top-of-file comment block.
-COPY --from=pgbackrest-stage /export/ /
-
+# pgbackrest from Alpine community repo (musl-native). Earlier attempts staged a
+# Debian glibc pgbackrest via gcompat — that binary linked against FORTIFY_SOURCE
+# glibc symbols (__memcpy_chk, __snprintf_chk, etc.) which gcompat does not
+# provide on aarch64, causing a segfault during SFTP auth. Apk pgbackrest is
+# built coherently against musl/Alpine libssh2 and avoids the ABI mismatch.
 RUN set -eux; \
-    UNRESOLVED=$(ldd /usr/bin/pgbackrest | grep 'not found' || true); \
+    apk add --no-cache pgbackrest; \
+    UNRESOLVED=$(ldd /usr/bin/pgbackrest 2>&1 | grep -E 'not found|Error relocating' || true); \
     if [ -n "$UNRESOLVED" ]; then \
-      echo "ERROR: pgbackrest has unresolved .so dependencies:"; \
+      echo "ERROR: pgbackrest has unresolved deps or relocations:"; \
       echo "$UNRESOLVED"; \
       exit 1; \
     fi; \
