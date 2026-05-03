@@ -7,6 +7,7 @@ arch:
   - aarch64
 startup: system
 init: false
+homeassistant_api: true
 ports:
   5432/tcp: null
 ports_description:
