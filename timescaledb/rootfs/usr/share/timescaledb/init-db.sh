@@ -155,7 +155,24 @@ fi
 
 # Create TimescaleDB extension if not loaded
 psql -U postgres -h /tmp -d "${DB_NAME}" -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
-bashio::log.info "TimescaleDB extension verified in '${DB_NAME}'."
+
+# Align the extension catalog with whatever timescaledb-X.Y.Z.so the current
+# image ships. CREATE EXTENSION IF NOT EXISTS leaves pg_extension.extversion
+# pinned to whatever was installed when the database was first created — so
+# after an image bump from e.g. 2.25.x to 2.26.x, the running database keeps
+# loading the older .so until ALTER EXTENSION ... UPDATE is run. This call is
+# idempotent (no-op when the catalog already matches default_version) and runs
+# before any pgbackrest invocation so backups always reflect the live binary.
+TS_VERSION_BEFORE=$(psql -U postgres -h /tmp -d "${DB_NAME}" -At -c \
+    "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")
+psql -U postgres -h /tmp -d "${DB_NAME}" -c "ALTER EXTENSION timescaledb UPDATE;" >/dev/null
+TS_VERSION_AFTER=$(psql -U postgres -h /tmp -d "${DB_NAME}" -At -c \
+    "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")
+if [ "${TS_VERSION_BEFORE}" != "${TS_VERSION_AFTER}" ]; then
+    bashio::log.info "TimescaleDB extension upgraded: ${TS_VERSION_BEFORE} → ${TS_VERSION_AFTER}"
+else
+    bashio::log.info "TimescaleDB extension at ${TS_VERSION_AFTER} (already current)."
+fi
 
 # === Role management ===
 

@@ -1,6 +1,15 @@
 # TimescaleDB App
 
-PostgreSQL 18 with TimescaleDB 2.25 for Home Assistant. Provides a high-performance time-series database optimized for the Raspberry Pi 5.
+PostgreSQL 18 with TimescaleDB 2.26 for Home Assistant, packaged as a Home Assistant app and tuned for the Raspberry Pi 5.
+
+## What this app is (and is not)
+
+This is a general-purpose PostgreSQL + TimescaleDB instance running alongside Home Assistant. It is **not** a drop-in for HA's recorder and does not modify HA's default storage. Two deployments are common:
+
+- **Parallel analytics / time-series store.** Home Assistant keeps using its built-in SQLite recorder. PostgreSQL is used by Grafana, custom integrations, or one-off analyses that need TimescaleDB features (continuous aggregates, compression, retention policies, etc.) on a copy of HA history or on independent data.
+- **HA recorder destination.** Home Assistant's `recorder.db_url` is pointed at this PostgreSQL instance, replacing SQLite as the live recorder backend. The `homeassistant` role (see "Roles and Access Control") is intended for this mode.
+
+The configuration sections below apply to both deployments. Sections specific to one mode call it out explicitly.
 
 ## Installation
 
@@ -59,18 +68,19 @@ The app manages PostgreSQL roles with per-role passwords and network access.
 
 #### homeassistant (always enabled)
 
-The primary role used by HA's recorder. Owns the database with full DDL and DML privileges (required for HA schema migrations).
+Owns the `homeassistant` database with full DDL and DML privileges. Suitable as either the destination for an HA recorder pointed at this app, or as the role that owns historical HA data copied in for analytics.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `ha_db_password` | string | *(auto-generated)* | Password for the `homeassistant` role. Leave empty to auto-generate on first start. |
 
-This role can only connect from within the HAOS app network (172.30.32.0/23). To configure HA's recorder:
+This role can only connect from within the HAOS app network (172.30.32.0/23).
 
-1. Open the app's **Log** tab — the ready-to-use `db_url` (with password) is printed on each start
-2. Copy the `db_url` into `secrets.yaml`:
+To use this app as HA's recorder backend (replacing SQLite for live writes):
+
+1. Open the app's **Log** tab — the ready-to-use `db_url` (with password) is printed on each start.
+2. Copy it into `secrets.yaml`:
    ```yaml
-   # secrets.yaml
    recorder_db_url: postgresql://homeassistant:ACTUAL_PASSWORD@b872f4a0-timescaledb:5432/homeassistant
    ```
 3. Reference it in `configuration.yaml`:
@@ -80,6 +90,8 @@ This role can only connect from within the HAOS app network (172.30.32.0/23). To
    ```
 
 The hostname `b872f4a0-timescaledb` is stable across app updates, rebuilds, and restarts. It is derived from the repository URL and only changes if you remove and re-add the repository from a different URL.
+
+If you keep HA on SQLite (parallel-analytics deployment), skip the `recorder.db_url` step. The role and database still exist and remain reachable for tools like Grafana or custom integrations.
 
 #### homeassistant_ro (optional)
 
@@ -125,6 +137,12 @@ Password behavior:
 - **Set a password:** Takes effect on the next **app** restart (no HA restart needed). The configured value is saved to the secrets file.
 - **Change a password:** Same as above — the new password is applied on app restart. If HA's `db_url` uses this role, you must also update `secrets.yaml` and restart HA.
 - **Clear a previously set password:** The existing password from the secrets file is kept. Clearing the field does not generate a new password or remove the old one.
+
+## TimescaleDB extension version
+
+The image ships a specific TimescaleDB version (currently 2.26) as `timescaledb-X.Y.Z.so`. On each app start, `init-db.sh` runs `ALTER EXTENSION timescaledb UPDATE` against the `homeassistant` database to align the per-database extension catalog (`pg_extension.extversion`) with the binary on disk. This is idempotent — no-op when already current — and is logged on each start as either `TimescaleDB extension at X.Y.Z (already current)` or `TimescaleDB extension upgraded: A.B.C → X.Y.Z`.
+
+PostgreSQL keeps every TimescaleDB minor version's `.so` side-by-side and loads whichever matches the catalog's recorded version. Without the auto-update, an image bump replaces the binaries on disk but sessions in pre-existing databases keep loading the older `.so`. The auto-update step removes that footgun: after a successful start, `SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';` reflects the version shipped by the current image.
 
 ## Data Storage
 
@@ -277,22 +295,22 @@ These permissions are not optional. pgBackRest refuses to use private keys with 
 
 #### 5. Configure the app
 
-Set the following in the app's **Configuration** tab:
+Set the following in the app's **Configuration** tab. Replace the `<MAIN>-sub<N>` placeholders with the usernames the Cloud Console assigned in step 1:
 
 | Option | Value |
-|--------|-------|
+| --- | --- |
 | `backup_enabled` | `true` |
 | `archive_timeout_seconds` | `3600` (default — WAL is force-flushed every hour even with no DB activity) |
-| `repo1_sftp_host` | `u404673-sub4.your-storagebox.de` |
+| `repo1_sftp_host` | `<MAIN>-sub<N>.your-storagebox.de` (the sub used for repo1) |
 | `repo1_sftp_port` | `22` |
-| `repo1_sftp_user` | `u404673-sub4` |
+| `repo1_sftp_user` | `<MAIN>-sub<N>` |
 | `repo1_sftp_path` | `/` |
-| `repo2_sftp_host` | `u404673-sub5.your-storagebox.de` |
+| `repo2_sftp_host` | `<MAIN>-sub<M>.your-storagebox.de` (the sub used for repo2, distinct from repo1's) |
 | `repo2_sftp_port` | `22` |
-| `repo2_sftp_user` | `u404673-sub5` |
+| `repo2_sftp_user` | `<MAIN>-sub<M>` |
 | `repo2_sftp_path` | `/` |
 
-> Always use port `22` and path `/`. Pointing pgBackRest at the main account with a subpath triggers the recursion segfault described above.
+> Always use port `22` and path `/`. Pointing pgBackRest at the main account, or at any sub-account with a non-`/` `repo*_sftp_path`, triggers the recursion segfault described above.
 
 Restart the app. On first start with `backup_enabled: true`:
 
@@ -360,29 +378,26 @@ HA and other apps connect using the hostname `b872f4a0-timescaledb` on port `543
    ```
    Replace `<RPI_IP>` with your Raspberry Pi's IP address and `PASSWORD` with the password from the app logs.
 
-## Migrating from SQLite
+## Copying historical SQLite data to PostgreSQL
 
-If you have an existing Home Assistant installation using SQLite, you can migrate all historical data to this PostgreSQL database. The migration runs while HA continues to use SQLite — there is no downtime until the final cutover.
+A separate tool in the [paradise-ha](https://github.com/flaksit/paradise-ha) repository copies HA's existing SQLite history (`home-assistant_v2.db`) into the `homeassistant` database in this app. The tool runs against a read-only mount of the SQLite file while HA keeps writing to it.
+
+This is useful in either deployment:
+
+- **Parallel analytics:** seed the PostgreSQL copy with HA's existing history so Grafana / TimescaleDB queries see more than just data accumulated since this app was installed. HA continues recording into SQLite as before.
+- **Recorder migration:** populate PostgreSQL before flipping `recorder.db_url`, so the new recorder backend already has the past. Mutable tip rows (the entity's current state and the open recorder run) are skipped during the bulk pass and must be reconciled against the live SQLite before flipping `db_url`; consult the migration tool's own README for the recommended cutover sequence.
 
 ### Prerequisites
 
 - This TimescaleDB app installed and running (see Installation above)
-- SSH access to the HAOS host (`ssh ha`)
-- The migration tooling from the [paradise-ha](https://github.com/flaksit/paradise-ha) repository
-
-### Overview
-
-The migration happens in two phases:
-
-1. **Bulk pre-copy** (this section): copies all historical data while HA keeps running on SQLite. Takes ~40 minutes for a 63M-row states table on RPi 5.
-2. **Cutover** (Phase 3): brief HA stop, copy final delta rows, switch recorder to PostgreSQL, restart HA. Target: under 5 minutes downtime.
+- SSH access to the HAOS host (alias `ha` is assumed below)
+- The migration tooling from [paradise-ha](https://github.com/flaksit/paradise-ha) cloned on your workstation
 
 ### Step 1: Prepare the schema
 
-The migration container includes a `reset-schema.sh` script that drops and recreates the PostgreSQL schema:
+The migration tool ships a `reset-schema.sh` that drops and recreates the schema in the `homeassistant` database. Transfer the tool to the Pi and run it:
 
 ```bash
-# Transfer migration files to Pi
 cd paradise-ha
 tar cf - scripts/migrate/Dockerfile scripts/migrate/.dockerignore \
   scripts/migrate/migrate.py scripts/migrate/pyproject.toml \
@@ -390,9 +405,10 @@ tar cf - scripts/migrate/Dockerfile scripts/migrate/.dockerignore \
   scripts/migrate/schema/ha_schema.sql \
   | ssh ha "mkdir -p /tmp/ha-migrate && tar xf - --strip-components=2 -C /tmp/ha-migrate"
 
-# Apply schema
 ssh ha "bash /tmp/ha-migrate/reset-schema.sh"
 ```
+
+In a parallel-analytics deployment, run `reset-schema.sh` only the first time you copy history. Re-running it drops everything that has accumulated in PostgreSQL since (including any continuous aggregates and Grafana writes against the same database).
 
 ### Step 2: Build the migration container
 
@@ -400,9 +416,9 @@ ssh ha "bash /tmp/ha-migrate/reset-schema.sh"
 ssh ha "cd /tmp/ha-migrate && docker build -t ha-migrate:latest ."
 ```
 
-This builds a Python 3.14 Alpine container with the migration script and psycopg3.
+Produces a Python + psycopg3 image used in the next steps.
 
-### Step 3: Run smoke test
+### Step 3: Smoke-test against a small slice
 
 ```bash
 PG_PASS=$(ssh ha "docker exec addon_b872f4a0_timescaledb cat /data/secrets/homeassistant_password")
@@ -412,43 +428,41 @@ ssh ha "docker run --rm --network hassio \
   -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-shm:/data/home-assistant_v2.db-shm:ro \
   -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-wal:/data/home-assistant_v2.db-wal:ro \
   -e SQLITE_PATH=/data/home-assistant_v2.db \
-  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@172.30.33.5:5432/homeassistant' \
+  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@b872f4a0-timescaledb:5432/homeassistant' \
   ha-migrate:latest --smoke-test 3000 --skip-mutable"
 ```
 
-The smoke test copies a small subset of data and runs exhaustive row-by-row verification. It should exit with `RESULT: SUCCESS`.
+A successful run ends with `RESULT: SUCCESS` and copies a small subset with column-by-column verification.
 
-### Step 4: Reset and run full migration
+### Step 4: Reset and run the full copy
 
 ```bash
-# Reset schema (clears smoke test data)
+# Drop the smoke-test rows and re-create the schema
 ssh ha "bash /tmp/ha-migrate/reset-schema.sh"
 
-# Full migration
+# Full copy
 ssh ha "docker run --rm --network hassio \
   -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db:/data/home-assistant_v2.db:ro \
   -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-shm:/data/home-assistant_v2.db-shm:ro \
   -v /mnt/data/supervisor/homeassistant/home-assistant_v2.db-wal:/data/home-assistant_v2.db-wal:ro \
   -e SQLITE_PATH=/data/home-assistant_v2.db \
-  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@172.30.33.5:5432/homeassistant' \
+  -e PG_DSN='postgresql://homeassistant:${PG_PASS}@b872f4a0-timescaledb:5432/homeassistant' \
   ha-migrate:latest --skip-mutable --batch-size 10000"
 ```
 
-The `--skip-mutable` flag ensures rows that HA is actively updating (current state per entity, open recorder run) are handled correctly: they are copied, verified, then deleted from PG and stored in `_migrate_excluded` for the cutover phase to re-copy with final values.
+`--skip-mutable` excludes rows HA is actively updating (current state per entity, the open recorder run). They are copied, verified, deleted from PostgreSQL, and recorded in `_migrate_excluded`. If you intend to swap the recorder, reconcile that table against live SQLite during the cutover (see the migration tool's README); otherwise the excluded rows simply remain unimported.
+
+Run time depends on database size and Pi class; expect roughly an hour for a multi-tens-of-millions-of-rows states table on a Pi 5.
 
 ### Verification
 
-The migration script performs automatic verification after each pass:
+The tool runs verification on every batch and on every reset:
 
-- **Row counts**: exact match between SQLite and PG for every copied PK range
-- **PK hash**: streaming MD5 of ordered primary keys catches swapped/duplicate/missing rows
-- **Exhaustive comparison** (smoke test only): column-by-column 1-on-1 comparison
+- **Row counts:** exact match between SQLite and PostgreSQL for every copied primary-key range
+- **PK hash:** streaming MD5 of ordered primary keys, which catches swapped, duplicate, or missing rows
+- **Exhaustive column comparison:** smoke test only
 
-The script exits with code 0 on success, 1 on any mismatch.
-
-### After bulk pre-copy
-
-Do **not** switch HA to PostgreSQL yet. The bulk pre-copy leaves ~380 mutable tip rows in `_migrate_excluded` — these will be re-copied during the Phase 3 cutover when HA is briefly stopped.
+Exit code 0 means all batches matched, 1 means at least one row diverged.
 
 ## Uninstalling
 
