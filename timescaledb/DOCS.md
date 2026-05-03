@@ -152,7 +152,7 @@ Each repo is a separate sub-account so that a credential compromise of one repo 
 
 This is **load-bearing** configuration. Do not point pgBackRest at the main Hetzner account with subpaths like `/backups/ha-tsdb-continuous`.
 
-pgBackRest 2.58.0 (current and `main` branch as of 2026-05) has a recursion bug in `storageSftpPathCreate` (`src/storage/sftp/storage.c:1039-1047`):
+pgBackRest 2.58.0 has a recursion bug in `storageSftpPathCreate` (`src/storage/sftp/storage.c:1039-1047`):
 
 ```c
 else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
@@ -171,15 +171,16 @@ else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
 
 #### 1. Create two sub-accounts in Hetzner Cloud Console
 
-Storage Boxes are now managed through the [Hetzner Cloud Console](https://console.hetzner.com) (the older Robot UI no longer offers Storage Box settings). Open the project that owns the Storage Box, select the box, then open the **Sub-accounts** tab and add two new sub-accounts. For each:
+Storage Boxes are managed through the [Hetzner Cloud Console](https://console.hetzner.com). Open the project that owns the Storage Box, select the box, then open the **Sub-accounts** tab and add two new sub-accounts. For each:
 
 - **Home directory:** a dedicated, empty subpath of the main account, one per repo (e.g. `/home/backups/ha-tsdb-continuous` and `/home/backups/ha-tsdb-yearly`). Sub-accounts are chrooted to this directory and see it as their `/`.
 - **Comment / label:** `pgbackrest repo1` and `pgbackrest repo2` (free text — only shown in the Console).
 - **Read-only:** off (pgBackRest must write).
-- **Reachable externally / Samba/CIFS / WebDAV:** off unless you have another use case for them; only SFTP on port 22 is needed.
-- **SSH support:** enable. The Console enables port 22 SFTP for the sub-account; the extended SSH service on port 23 (which exposes `install-ssh-key`, `ssh-copy-id`, and rsync/borg shell) is **not** offered for sub-accounts as of 2026-05 — only the main account has port 23. This matters for step 3.
+- **External Reachability:** on — required for the Storage Box to be reachable from outside Hetzner's internal network (e.g. from a Raspberry Pi at home).
+- **Samba/CIFS, WebDAV:** off — pgBackRest does not use them.
+- **SSH support:** off. With SSH off the sub-account exposes only SFTP on port 22; the port-23 extended shell that offers `install-ssh-key` / `ssh-copy-id` / rsync / borg stays disabled, which is fine — the main account keeps SSH enabled so it can write each sub-account's `authorized_keys` file in step 3.
 
-After saving, the Console assigns each sub a username (e.g. `u404673-sub4`) and the per-sub hostname follows the pattern `<username>.your-storagebox.de` (e.g. `u404673-sub4.your-storagebox.de`). Note both — the app needs them in step 5.
+The Console assigns each sub a username (e.g. `u404673-sub4`) and the per-sub hostname follows the pattern `<username>.your-storagebox.de` (e.g. `u404673-sub4.your-storagebox.de`). Note both — the app needs them in step 5.
 
 References: [Sub-account access overview](https://docs.hetzner.com/storage/storage-box/access/access-overview/), [SFTP/SCP access docs](https://docs.hetzner.com/storage/storage-box/access/access-sftp-scp/).
 
@@ -196,9 +197,9 @@ Two separate keys is mandatory — sharing a key across repos defeats the creden
 
 #### 3. Install the public keys into each sub-account
 
-Sub-accounts are reachable on port 22 SFTP only. Hetzner's port-22 SFTP service requires `authorized_keys` in **RFC4716** format (the multi-line PEM-style block, not the one-line `ssh-ed25519 AAAA...` OpenSSH format that port 23 accepts). The recommended `install-ssh-key` / `ssh-copy-id -p 23 -s` flow described in [Hetzner's SSH key docs](https://docs.hetzner.com/storage/storage-box/backup-space-ssh-keys/) is **not available** here because port 23 is not enabled for sub-accounts.
+With SSH disabled on the sub-accounts (step 1), only port 22 SFTP remains. Hetzner's port-22 SFTP service expects `authorized_keys` in **RFC4716** format (the multi-line PEM-style block) — the one-line `ssh-ed25519 AAAA...` OpenSSH format that the port-23 shell accepts will not authenticate here. The `install-ssh-key` / `ssh-copy-id -p 23 -s` flow from [Hetzner's SSH key docs](https://docs.hetzner.com/storage/storage-box/backup-space-ssh-keys/) is therefore not applicable to the sub-accounts.
 
-Workaround: convert the public keys to RFC4716, then write them into each sub's chroot via the **main account's** port-23 shell (which has full read/write across every sub's home directory):
+Convert the public keys to RFC4716 and write them into each sub's chroot through the **main account's** port-23 shell (the main account has full read/write across every sub's home directory):
 
 ```bash
 # Convert to RFC4716
@@ -249,7 +250,7 @@ ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub4.your-storagebox.de > ./known
 ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub5.your-storagebox.de > ./known_hosts_repo2
 ```
 
-Push everything to the HA host. Use `scp -O` (the legacy SCP wire protocol) — HAOS BusyBox ssh does not support the new `sftp` transfer protocol that recent OpenSSH clients default to:
+Push everything to the HA host. The `-O` flag selects the original SCP wire protocol; HAOS BusyBox ssh does not implement the SFTP transfer protocol that OpenSSH clients default to:
 
 ```bash
 SECRETS=/mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets
