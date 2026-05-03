@@ -8,13 +8,12 @@ ARG BUILD_FROM
 # WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies not
 # present in the postgres:18-alpine image. The RUN step below fails the build if any
 # symbol is unresolved.
-# VERSION note: pgbackrest version tracks Alpine stable (2.57.0 at 3.23); bumps
-# arrive when Alpine rebuilds the package. Staging image tag (alpine:3.23) must match
-# the runtime base's Alpine version. If the base image bumps to Alpine 3.24, update
-# the staging tag in the same commit (D-03).
+# VERSION note: pgbackrest 2.57.0 (alpine:3.23 stable) has an SFTP segfault on aarch64;
+# 2.58.0 from alpine:edge fixes it. Pull pgbackrest from edge community while keeping the
+# staging image on 3.23 for all other deps. The ldd guard catches any .so drift.
 FROM alpine:3.23 AS pgbackrest-stage
 
-RUN apk add --no-cache pgbackrest
+RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community pgbackrest
 
 # Copy pgbackrest binary plus only the .so files not already in the postgres:18-alpine
 # runtime image into /export/ for selective COPY into the runtime stage.
