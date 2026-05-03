@@ -169,14 +169,19 @@ else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
 
 ### Setup
 
-#### 1. Create two sub-accounts in Hetzner Robot
+#### 1. Create two sub-accounts in Hetzner Cloud Console
 
-In Hetzner Console > your Storage Box > Sub-accounts, create two with:
+Storage Boxes are now managed through the [Hetzner Cloud Console](https://console.hetzner.com) (the older Robot UI no longer offers Storage Box settings). Open the project that owns the Storage Box, select the box, then open the **Sub-accounts** tab and add two new sub-accounts. For each:
 
-- Home directory pointing at a dedicated empty subpath of the main account (e.g. `/home/backups/ha-tsdb-continuous` and `/home/backups/ha-tsdb-yearly`)
-- Comment / label: `pgbackrest repo1` and `pgbackrest repo2` (or similar)
-- Permissions: enable SSH access (port 22 SFTP only — Hetzner does not expose port 23 for sub-accounts)
-- Note the assigned usernames (e.g. `u404673-sub4`, `u404673-sub5`) and the per-sub hostname (e.g. `u404673-sub4.your-storagebox.de`)
+- **Home directory:** a dedicated, empty subpath of the main account, one per repo (e.g. `/home/backups/ha-tsdb-continuous` and `/home/backups/ha-tsdb-yearly`). Sub-accounts are chrooted to this directory and see it as their `/`.
+- **Comment / label:** `pgbackrest repo1` and `pgbackrest repo2` (free text — only shown in the Console).
+- **Read-only:** off (pgBackRest must write).
+- **Reachable externally / Samba/CIFS / WebDAV:** off unless you have another use case for them; only SFTP on port 22 is needed.
+- **SSH support:** enable. The Console enables port 22 SFTP for the sub-account; the extended SSH service on port 23 (which exposes `install-ssh-key`, `ssh-copy-id`, and rsync/borg shell) is **not** offered for sub-accounts as of 2026-05 — only the main account has port 23. This matters for step 3.
+
+After saving, the Console assigns each sub a username (e.g. `u404673-sub4`) and the per-sub hostname follows the pattern `<username>.your-storagebox.de` (e.g. `u404673-sub4.your-storagebox.de`). Note both — the app needs them in step 5.
+
+References: [Sub-account access overview](https://docs.hetzner.com/storage/storage-box/access/access-overview/), [SFTP/SCP access docs](https://docs.hetzner.com/storage/storage-box/access/access-sftp-scp/).
 
 #### 2. Generate two distinct SSH keypairs
 
@@ -191,7 +196,9 @@ Two separate keys is mandatory — sharing a key across repos defeats the creden
 
 #### 3. Install the public keys into each sub-account
 
-Hetzner sub-accounts on port 22 require RFC4716-format `authorized_keys`. Convert and upload via the main account's port-23 shell (which has write access to all sub-account chroots):
+Sub-accounts are reachable on port 22 SFTP only. Hetzner's port-22 SFTP service requires `authorized_keys` in **RFC4716** format (the multi-line PEM-style block, not the one-line `ssh-ed25519 AAAA...` OpenSSH format that port 23 accepts). The recommended `install-ssh-key` / `ssh-copy-id -p 23 -s` flow described in [Hetzner's SSH key docs](https://docs.hetzner.com/storage/storage-box/backup-space-ssh-keys/) is **not available** here because port 23 is not enabled for sub-accounts.
+
+Workaround: convert the public keys to RFC4716, then write them into each sub's chroot via the **main account's** port-23 shell (which has full read/write across every sub's home directory):
 
 ```bash
 # Convert to RFC4716
