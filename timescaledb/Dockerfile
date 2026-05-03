@@ -1,16 +1,22 @@
 ARG BUILD_FROM
 
 # pgbackrest staging image — discarded after binary + .so extraction.
-# WHY multi-stage: Direct `apk add pgbackrest` in the runtime stage would pull the
-# Alpine-packaged `postgresql18` server (~180 MiB) as a meta-dep and shadow the
-# source-built PG18 in /usr/local/bin. The staging image is discarded; only the
-# binary and missing .so files are copied forward.
-# WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies not
-# present in the postgres:18-alpine image. The RUN step below fails the build if any
-# symbol is unresolved.
-# VERSION note: pgbackrest 2.57.0 (alpine:3.23 stable) has an SFTP segfault on aarch64;
-# 2.58.0 from alpine:edge fixes it. Pull pgbackrest from edge community while keeping the
-# staging image on 3.23 for all other deps. The ldd guard catches any .so drift.
+# WHY multi-stage: Direct `apk add pgbackrest` in the runtime stage pulls the
+# Alpine `postgresql18` server (~180 MiB) as a transitive dep, which collides
+# with the source-built PG18 in /usr/local/bin and creates /etc/postgresql as
+# a symlink that breaks `COPY rootfs /` later. Multi-stage takes only the
+# pgbackrest binary plus missing .so libs (libssh2, libbz2) into the runtime.
+# WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies
+# not present in the postgres:18-alpine image. The RUN step below fails the
+# build if any symbol is unresolved.
+# VERSION note: pgbackrest 2.58.0 is pulled from alpine:edge community because
+# alpine:3.23 stable only ships 2.57.0 at time of writing. There is no known
+# 2.57-vs-2.58 functional difference relevant to this app — both are subject
+# to upstream pgbackrest bug pgbackrest/pgbackrest#XXXX (path-create infinite
+# recursion when SFTP returns NO_SUCH_FILE walking up to `/`). The bug is
+# avoided by configuring pgBackRest against Hetzner *sub-account* chroots at
+# repo-path `/`, not against the main account with subpaths. See DOCS.md
+# section "Backup (pgBackRest to Hetzner Storage Box)".
 FROM alpine:3.23 AS pgbackrest-stage
 
 RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community pgbackrest
@@ -89,12 +95,6 @@ RUN set -eux; \
       exit 1; \
     fi; \
     /usr/bin/pgbackrest version | grep -E '^pgBackRest 2\.[0-9]+\.[0-9]+'
-
-# Diagnostic tooling for pgbackrest SFTP stanza-create segfault investigation —
-# allows running `gdb --args pgbackrest ... stanza-create` inside the container
-# to capture a backtrace. Includes musl debug info via libc6-compat-dbg fallback
-# (musl-dbg) and libssh2 symbols when the package provides them.
-RUN apk add --no-cache gdb musl-dbg
 
 # Create data directory for persistent storage
 RUN mkdir -p /data

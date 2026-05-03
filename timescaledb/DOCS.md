@@ -133,7 +133,205 @@ PostgreSQL data is stored in the app's persistent `/data/postgres` directory. Th
 - **Preserved** across app restarts and updates
 - **Excluded** from Home Assistant snapshots (too large for the snapshot format)
 
-> **Important:** This app's data is not included in HA backups. A dedicated backup solution will be configured in a later phase.
+> **Important:** This app's data is not included in HA backups. Use the **Backup** section below to configure pgBackRest off-host.
+
+## Backup (pgBackRest to Hetzner Storage Box)
+
+The app integrates [pgBackRest](https://pgbackrest.org/) to ship encrypted, deduplicated, point-in-time-recoverable backups to two independent off-host SFTP destinations.
+
+### Design
+
+Two separate Hetzner Storage Box **sub-accounts** are used, one per repository:
+
+- **repo1** — rolling operational backups: monthly fulls + weekly diffs + WAL, retained for 3 years (tunable)
+- **repo2** — annual archival: same backup machinery, but unlimited retention, intended for manual/yearly preservation
+
+Each repo is a separate sub-account so that a credential compromise of one repo cannot reach the other, and each has its own encryption passphrase generated on first start.
+
+### Why Hetzner sub-accounts at path `/` (do not change this)
+
+This is **load-bearing** configuration. Do not point pgBackRest at the main Hetzner account with subpaths like `/backups/ha-tsdb-continuous`.
+
+pgBackRest 2.58.0 (current and `main` branch as of 2026-05) has a recursion bug in `storageSftpPathCreate` (`src/storage/sftp/storage.c:1039-1047`):
+
+```c
+else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
+{
+    String *const pathParent = strPath(path);
+    storageInterfacePathCreateP(this, pathParent, ...);
+    storageInterfacePathCreateP(this, path, ...);
+}
+```
+
+`strPath("/")` returns `"/"` unchanged. If the SFTP server returns `LIBSSH2_FX_NO_SUCH_FILE` while pgBackRest walks parent directories upward, the recursion never terminates at root and pgBackRest segfaults from stack overflow (~880 recursive frames). This was diagnosed via gdb backtrace.
+
+**Sub-account chroots at path `/` avoid the trigger** because pgBackRest creates `/archive` and `/backup` directly inside the sub-account's writable chroot — the very first `mkdir` succeeds (no walk-up needed). Main accounts on Hetzner Storage Box exhibit the trigger because Hetzner returns `NO_SUCH_FILE` for the chained walk-up to `/`.
+
+### Setup
+
+#### 1. Create two sub-accounts in Hetzner Robot
+
+In Hetzner Console > your Storage Box > Sub-accounts, create two with:
+
+- Home directory pointing at a dedicated empty subpath of the main account (e.g. `/home/backups/ha-tsdb-continuous` and `/home/backups/ha-tsdb-yearly`)
+- Comment / label: `pgbackrest repo1` and `pgbackrest repo2` (or similar)
+- Permissions: enable SSH access (port 22 SFTP only — Hetzner does not expose port 23 for sub-accounts)
+- Note the assigned usernames (e.g. `u404673-sub4`, `u404673-sub5`) and the per-sub hostname (e.g. `u404673-sub4.your-storagebox.de`)
+
+#### 2. Generate two distinct SSH keypairs
+
+On your workstation:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C 'pgbackrest-repo1@ha-timescaledb' -f ./repo1
+ssh-keygen -t ed25519 -N '' -C 'pgbackrest-repo2@ha-timescaledb' -f ./repo2
+```
+
+Two separate keys is mandatory — sharing a key across repos defeats the credential isolation between the two sub-accounts.
+
+#### 3. Install the public keys into each sub-account
+
+Hetzner sub-accounts on port 22 require RFC4716-format `authorized_keys`. Convert and upload via the main account's port-23 shell (which has write access to all sub-account chroots):
+
+```bash
+# Convert to RFC4716
+ssh-keygen -e -f ./repo1.pub > ./repo1.rfc.pub
+ssh-keygen -e -f ./repo2.pub > ./repo2.rfc.pub
+
+# Connect to MAIN account (port 23) and create the .ssh dirs inside each sub chroot
+ssh -p 23 u404673@u404673.your-storagebox.de "mkdir backups/ha-tsdb-continuous/.ssh; mkdir backups/ha-tsdb-yearly/.ssh"
+
+# Upload as authorized_keys (one per sub)
+scp -O -P 23 ./repo1.rfc.pub u404673@u404673.your-storagebox.de:backups/ha-tsdb-continuous/.ssh/authorized_keys
+scp -O -P 23 ./repo2.rfc.pub u404673@u404673.your-storagebox.de:backups/ha-tsdb-yearly/.ssh/authorized_keys
+
+# Tighten permissions (Hetzner enforces these for SSH key auth)
+ssh -p 23 u404673@u404673.your-storagebox.de "chmod 700 backups/ha-tsdb-continuous/.ssh backups/ha-tsdb-yearly/.ssh; chmod 600 backups/ha-tsdb-continuous/.ssh/authorized_keys backups/ha-tsdb-yearly/.ssh/authorized_keys"
+```
+
+Verify each sub-account auth works (each should connect and land at `/`):
+
+```bash
+sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'pwd'
+sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'pwd'
+```
+
+#### 4. Stage the secrets on the HA host
+
+The app reads SSH private keys, known_hosts, and (optionally pre-set) cipher passphrases from `/data/secrets/` inside the container. On the HAOS host these live at:
+
+```
+/mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/
+```
+
+Where `b872f4a0` is the slug Home Assistant generates from the repository URL (visible in **Settings > Apps > TimescaleDB**). Adjust if your slug differs.
+
+Files required:
+
+| File | Content |
+|------|---------|
+| `pgbackrest_id_ed25519_repo1` | repo1 private key (the `repo1` file from step 2) |
+| `pgbackrest_id_ed25519_repo2` | repo2 private key (the `repo2` file from step 2) |
+| `pgbackrest_known_hosts_repo1` | host fingerprints for sub4 — see below |
+| `pgbackrest_known_hosts_repo2` | host fingerprints for sub5 — see below |
+
+Generate the known_hosts files by scanning each sub on port 22:
+
+```bash
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub4.your-storagebox.de > ./known_hosts_repo1
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub5.your-storagebox.de > ./known_hosts_repo2
+```
+
+Push everything to the HA host. Use `scp -O` (the legacy SCP wire protocol) — HAOS BusyBox ssh does not support the new `sftp` transfer protocol that recent OpenSSH clients default to:
+
+```bash
+SECRETS=/mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets
+scp -O ./repo1            ha:$SECRETS/pgbackrest_id_ed25519_repo1
+scp -O ./repo2            ha:$SECRETS/pgbackrest_id_ed25519_repo2
+scp -O ./known_hosts_repo1 ha:$SECRETS/pgbackrest_known_hosts_repo1
+scp -O ./known_hosts_repo2 ha:$SECRETS/pgbackrest_known_hosts_repo2
+```
+
+Set ownership and mode (`uid 70` is the postgres user inside the app's Alpine base; the app runs pgBackRest as that user):
+
+```bash
+ssh ha "chown 70:70 $SECRETS/pgbackrest_id_ed25519_repo1 \
+                    $SECRETS/pgbackrest_id_ed25519_repo2 \
+                    $SECRETS/pgbackrest_known_hosts_repo1 \
+                    $SECRETS/pgbackrest_known_hosts_repo2"
+ssh ha "chmod 600   $SECRETS/pgbackrest_id_ed25519_repo1 \
+                    $SECRETS/pgbackrest_id_ed25519_repo2 \
+                    $SECRETS/pgbackrest_known_hosts_repo1 \
+                    $SECRETS/pgbackrest_known_hosts_repo2"
+```
+
+These permissions are not optional. pgBackRest refuses to use private keys with permissive modes, and the app explicitly checks ownership/mode at start.
+
+#### 5. Configure the app
+
+Set the following in the app's **Configuration** tab:
+
+| Option | Value |
+|--------|-------|
+| `backup_enabled` | `true` |
+| `archive_timeout_seconds` | `3600` (default — WAL is force-flushed every hour even with no DB activity) |
+| `repo1_sftp_host` | `u404673-sub4.your-storagebox.de` |
+| `repo1_sftp_port` | `22` |
+| `repo1_sftp_user` | `u404673-sub4` |
+| `repo1_sftp_path` | `/` |
+| `repo2_sftp_host` | `u404673-sub5.your-storagebox.de` |
+| `repo2_sftp_port` | `22` |
+| `repo2_sftp_user` | `u404673-sub5` |
+| `repo2_sftp_path` | `/` |
+
+> Always use port `22` and path `/`. Pointing pgBackRest at the main account with a subpath triggers the recursion segfault described above.
+
+Restart the app. On first start with `backup_enabled: true`:
+
+1. The app generates two cipher passphrases (`/data/secrets/pgbackrest_cipher_pass_repo[12]`) and writes them once. They are never overwritten — the same passphrases must be available to restore later, so copy them somewhere safe out-of-band.
+2. `pgbackrest stanza-create` runs against both repos. Successful output looks like:
+
+   ```
+   P00 INFO: stanza-create for stanza 'timescaledb' on repo1
+   P00 INFO: stanza-create for stanza 'timescaledb' on repo2
+   P00 INFO: stanza-create command end: completed successfully
+   pgBackRest: stanza-create OK (attempt 1)
+   pgBackRest: backup provisioning complete — WAL archiving active
+   ```
+
+3. PostgreSQL `archive_command` starts pushing WAL to both repos. Each WAL segment is logged as `pushed WAL file 'XXXXXX' to the archive`.
+
+If `stanza-create` fails on every attempt (3 retries with backoff), the init script disables `archive_mode` for that boot to prevent unbounded WAL accumulation on disk. Fix the underlying error and restart the app to re-enable archiving.
+
+### Verification
+
+```bash
+# From your workstation: list contents of each sub via SFTP
+sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'ls -l'
+sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'ls -l'
+```
+
+After a successful first start each should list `archive/` and `backup/` directories owned by the corresponding sub-user.
+
+To inspect pgBackRest's view of stanza state from inside the container:
+
+```bash
+ssh ha "docker exec addon_b872f4a0_timescaledb gosu postgres pgbackrest --stanza=timescaledb info"
+```
+
+### Troubleshooting
+
+**Symptom: `stanza-create` segfaults (exit code 139), backtrace shows ~800 recursive frames.**
+Configuration points pgBackRest at the main account with a non-empty subpath, or at any path other than the sub-account chroot root. Switch to dedicated sub-accounts at `repo*_sftp_path: /`.
+
+**Symptom: `stanza-create` exits with `unable to load private key` or `permission denied`.**
+The `/data/secrets/pgbackrest_id_ed25519_repo*` files are owned by root or have mode `0644`. Re-run the chown/chmod commands in step 4.
+
+**Symptom: `host key verification failed`.**
+The `pgbackrest_known_hosts_repo*` file does not contain a key for the host pgBackRest is connecting to, or the host key on Hetzner has rotated. Re-run `ssh-keyscan -p 22 ...` and re-upload.
+
+**Symptom: cipher passphrase lost after `/data/secrets/` was wiped.**
+Existing backups are unrecoverable. The cipher passphrases are generated once on first stanza-create and never written elsewhere. Always copy `/data/secrets/pgbackrest_cipher_pass_repo[12]` to an out-of-band location after first start.
 
 ## Network
 
