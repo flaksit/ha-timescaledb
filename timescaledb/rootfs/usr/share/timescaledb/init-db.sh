@@ -51,6 +51,14 @@ ensure_cipher_passphrase() {
     local repo_id="$1"
     local pass_file="${SECRETS_DIR}/pgbackrest_cipher_pass_${repo_id}"
 
+    # Detect zero-byte file separately from "file absent". A zero-byte file is NOT the same
+    # as a missing file: it indicates a truncated write (disk-full, process-killed mid-write).
+    # Silently regenerating would make all existing encrypted backups permanently unrecoverable.
+    if [ -f "${pass_file}" ] && [ ! -s "${pass_file}" ]; then
+        bashio::log.error "pgBackRest cipher passphrase file for ${repo_id} exists but is empty (${pass_file}). This may indicate a corrupted write. NOT regenerating — fix manually to avoid backup loss."
+        return 1
+    fi
+
     if [ ! -s "${pass_file}" ]; then
         head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32 > "${pass_file}"
         # Log warning (not info) so it stands out — loss of this passphrase = permanent backup loss
