@@ -1,0 +1,56 @@
+# pgbackrest-archive.conf.tmpl — ARCHIVE-PUSH ONLY config (D-22a)
+# Loaded EXCLUSIVELY by PG's archive_command via --config=...
+# Contains repo1 only — archive-push MUST NOT fan WAL to repo2 (D-22).
+# All other pgbackrest invocations (backup, check, info, verify, stanza-create)
+# use /etc/pgbackrest/pgbackrest.conf (the dual-repo default). Do NOT add a
+# --config= flag to those invocations — repo2 must remain visible to them.
+# Phase 9 annual backup uses: pgbackrest backup --repo=2 --type=full (NO --config=)
+#
+# NOTE: This file is a COMPLETE config from pgBackRest's perspective — it does NOT
+# inherit from pgbackrest.conf. Any [global] option needed by archive-push must be
+# present here. Missing options (e.g. log-path) will cause archive-push to fail
+# (verified behavior from Pitfall 3 in 08-05b-RESEARCH.md).
+#
+# Rendered by tempio from /data/options.json — DO NOT edit in-container;
+# edit the .tmpl in rootfs/etc/pgbackrest/ and rebuild the image.
+
+{{ if .backup_enabled }}
+[global]
+log-level-console=info
+log-level-file=off
+log-path=/var/log/pgbackrest
+compress-type=zst
+compress-level=3
+process-max=2
+# NOTE: the "archive copy into backup" global option is intentionally absent.
+# It applies only to backup commands, not to archive-push invocations.
+# It lives in /etc/pgbackrest/pgbackrest.conf (the dual-repo config).
+
+[timescaledb]
+pg1-path=/data/postgres
+# Alpine PG uses /tmp for the Unix socket, not the default /var/run/postgresql
+pg1-socket-path=/tmp
+
+# repo1 ONLY — archive-push MUST NOT fan WAL to repo2 (D-22/D-22a).
+# repo2 is intentionally absent from this file.
+{{ if .repo1_sftp_host }}
+repo1-type=sftp
+repo1-path={{ .repo1_sftp_path }}
+repo1-sftp-host={{ .repo1_sftp_host }}
+repo1-sftp-host-port={{ .repo1_sftp_port }}
+repo1-sftp-host-user={{ .repo1_sftp_user }}
+repo1-sftp-host-key-check-type=strict
+repo1-sftp-host-key-hash-type=sha256
+repo1-sftp-known-host=/data/secrets/pgbackrest_known_hosts_repo1
+repo1-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo1
+repo1-cipher-type=aes-256-cbc
+# REQUIRED: archive-only config is complete — pgBackRest does not inherit from the main config.
+# Omitting cipher-type here would cause archive-push to fail with a cipher mismatch error
+# even though the passphrase is injected via PGBACKREST_REPO1_CIPHER_PASS env var.
+repo1-bundle=y
+repo1-block=y
+# Per-repo retention settings (full/diff/archive type and count) are intentionally
+# absent from this file: archive-push neither reads nor honors them. Those settings
+# live only in the dual-repo /etc/pgbackrest/pgbackrest.conf used by expire and backup.
+{{ end }}
+{{ end }}
