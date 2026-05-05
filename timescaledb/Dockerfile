@@ -19,7 +19,7 @@ ARG BUILD_FROM
 # subpaths. See DOCS.md section "Backup (pgBackRest to Hetzner Storage Box)".
 FROM alpine:3.23 AS pgbackrest-stage
 
-RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community pgbackrest
+RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.58.0-r0"
 
 # Copy pgbackrest binary plus only the .so files not already in the postgres:18-alpine
 # runtime image into /export/ for selective COPY into the runtime stage.
