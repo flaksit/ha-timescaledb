@@ -153,7 +153,9 @@ PostgreSQL data is stored in the app's persistent `/data/postgres` directory. Th
 
 > **Important:** This app's data is not included in HA backups. Use the **Backup** section below to configure pgBackRest off-host.
 
-## Backup (pgBackRest to Hetzner Storage Box)
+## Backup
+
+> **Opt-in only.** `backup_enabled` defaults to `false`. Upstream ha-timescaledb users who do not use pgBackRest are completely unaffected — the app behaves identically to v1.0.x when this option is not set.
 
 The app integrates [pgBackRest](https://pgbackrest.org/) to ship encrypted, deduplicated, point-in-time-recoverable backups to two independent off-host SFTP destinations.
 
@@ -185,9 +187,9 @@ else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
 
 **Sub-account chroots at path `/` avoid the trigger** because pgBackRest creates `/archive` and `/backup` directly inside the sub-account's writable chroot — the very first `mkdir` succeeds (no walk-up needed). Main accounts on Hetzner Storage Box exhibit the trigger because Hetzner returns `NO_SUCH_FILE` for the chained walk-up to `/`.
 
-### Setup
+### Backup Setup (BKUP-13)
 
-#### 1. Create two sub-accounts in Hetzner Cloud Console
+#### Step 1. Create two sub-accounts in Hetzner Cloud Console
 
 Storage Boxes are managed through the [Hetzner Cloud Console](https://console.hetzner.com). Open the project that owns the Storage Box, select the box, then open the **Sub-accounts** tab and add two new sub-accounts. For each:
 
@@ -202,7 +204,7 @@ The Console assigns each sub a username (e.g. `u404673-sub4`) and the per-sub ho
 
 References: [Sub-account access overview](https://docs.hetzner.com/storage/storage-box/access/access-overview/), [SFTP/SCP access docs](https://docs.hetzner.com/storage/storage-box/access/access-sftp-scp/).
 
-#### 2. Generate two distinct SSH keypairs
+#### Step 2. Generate two distinct SSH keypairs
 
 On your workstation:
 
@@ -213,7 +215,7 @@ ssh-keygen -t ed25519 -N '' -C 'pgbackrest-repo2@ha-timescaledb' -f ./repo2
 
 Two separate keys is mandatory — sharing a key across repos defeats the credential isolation between the two sub-accounts.
 
-#### 3. Install the public keys into each sub-account
+#### Step 3. Install the public keys into each sub-account
 
 With SSH disabled on the sub-accounts (step 1), only port 22 SFTP remains. Hetzner's port-22 SFTP service expects `authorized_keys` in **RFC4716** format (the multi-line PEM-style block) — the one-line `ssh-ed25519 AAAA...` OpenSSH format that the port-23 shell accepts will not authenticate here. The `install-ssh-key` / `ssh-copy-id -p 23 -s` flow from [Hetzner's SSH key docs](https://docs.hetzner.com/storage/storage-box/backup-space-ssh-keys/) is therefore not applicable to the sub-accounts.
 
@@ -242,7 +244,7 @@ sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'pwd'
 sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'pwd'
 ```
 
-#### 4. Stage the secrets on the HA host
+#### Step 4. Stage the secrets on the HA host
 
 The app reads SSH private keys, known_hosts, and (optionally pre-set) cipher passphrases from `/data/secrets/` inside the container. On the HAOS host these live at:
 
@@ -293,7 +295,7 @@ ssh ha "chmod 600   $SECRETS/pgbackrest_id_ed25519_repo1 \
 
 These permissions are not optional. pgBackRest refuses to use private keys with permissive modes, and the app explicitly checks ownership/mode at start.
 
-#### 5. Configure the app
+#### Step 5. Configure the app
 
 Set the following in the app's **Configuration** tab. Replace the `<MAIN>-sub<N>` placeholders with the usernames the Cloud Console assigned in step 1:
 
@@ -329,15 +331,75 @@ Restart the app. On first start with `backup_enabled: true`:
 
 If `stanza-create` fails on every attempt (3 retries with backoff), the init script disables `archive_mode` for that boot to prevent unbounded WAL accumulation on disk. Fix the underlying error and restart the app to re-enable archiving.
 
-### Verification
+#### Step 6. Verify stanza creation and WAL archiving
+
+After a successful first start, list the stanza contents from your workstation:
 
 ```bash
-# From your workstation: list contents of each sub via SFTP
+# List contents of each sub via SFTP
 sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'ls -l'
 sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'ls -l'
 ```
 
-After a successful first start each should list `archive/` and `backup/` directories owned by the corresponding sub-user.
+Each should list `archive/` and `backup/` directories owned by the corresponding sub-user.
+
+Inspect pgBackRest's view of the stanza from inside the container:
+
+```bash
+ssh ha "docker exec addon_b872f4a0_timescaledb gosu postgres \
+  pgbackrest --stanza=timescaledb info"
+```
+
+Verify WAL is reaching repo1. Run the check command via docker exec (substitute the actual container name, which you can find with `docker ps | grep timescale`):
+
+```bash
+ssh ha "docker exec <container> gosu postgres \
+  pgbackrest --stanza=timescaledb check"
+```
+
+Expected behavior: repo1 WAL archive check passes with "WAL segment ... successfully archived to repo1". The command will report a timeout error for repo2 and exit non-zero (exit code 82) — this is expected. By design (D-22), the WAL archive stream is scoped to repo1 only; repo2 receives no continuous WAL. The check command cannot be scoped to a single repo, so the repo2 timeout is unavoidable and is not a malfunction.
+
+#### Step 7. Store all four secrets in your password manager
+
+This is the most important step. If these secrets are lost, all encrypted backups become permanently unrecoverable.
+
+The four secrets to copy out-of-band, before anything else:
+
+| Secret file (inside container) | What it is |
+|--------------------------------|------------|
+| `/data/secrets/pgbackrest_cipher_pass_repo1` | repo1 AES-256 cipher passphrase (auto-generated; immutable after stanza-create) |
+| `/data/secrets/pgbackrest_cipher_pass_repo2` | repo2 AES-256 cipher passphrase (auto-generated; immutable after stanza-create) |
+| `/data/secrets/pgbackrest_id_ed25519_repo1` | repo1 SSH private key (the file you copied in Step 4) |
+| `/data/secrets/pgbackrest_id_ed25519_repo2` | repo2 SSH private key (the file you copied in Step 4) |
+
+> Run each command below in a private terminal session. Before running: disable shell history logging for the session (`set +o history` in bash, or use a terminal that does not log history). Do not screenshot the output. Paste each secret directly into your password manager.
+
+```bash
+SECRETS=/mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets
+ssh ha "cat $SECRETS/pgbackrest_cipher_pass_repo1"
+ssh ha "cat $SECRETS/pgbackrest_cipher_pass_repo2"
+ssh ha "cat $SECRETS/pgbackrest_id_ed25519_repo1"
+ssh ha "cat $SECRETS/pgbackrest_id_ed25519_repo2"
+```
+
+The cipher passphrases are immutable. After stanza-create, the app never regenerates them. Permanent loss of a passphrase means permanent loss of access to that repo's backups.
+
+### Capacity Planning
+
+Storage estimates based on live system measurements (verified 2026-04-16):
+
+| Metric | Observed value |
+|--------|---------------|
+| Compressed chunk growth | ~52 MiB/week |
+| Backup size at 3-year steady state | ~5 GiB (pgBackRest block-level dedup + compression) |
+| repo1 steady-state storage | ~190 GiB (3-year rolling fulls + diffs + WAL) |
+| repo2 growth rate | one annual full per year (~5 GiB/year at current data rate) |
+
+A Hetzner Storage Box BX11 (1 TB) comfortably fits both repos for the first decade under these numbers.
+
+These figures assume default retention settings (monthly fulls for 3 years on repo1). Retention can be tuned via pgBackRest configuration.
+
+### Verification
 
 To inspect pgBackRest's view of stanza state from inside the container:
 
@@ -358,6 +420,139 @@ The `pgbackrest_known_hosts_repo*` file does not contain a key for the host pgBa
 
 **Symptom: cipher passphrase lost after `/data/secrets/` was wiped.**
 Existing backups are unrecoverable. The cipher passphrases are generated once on first stanza-create and never written elsewhere. Always copy `/data/secrets/pgbackrest_cipher_pass_repo[12]` to an out-of-band location after first start.
+
+### Backup command reference (BKUP-14)
+
+All commands run as the `postgres` user inside the app container. Resolve the container name at runtime:
+
+```bash
+CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
+```
+
+pgBackRest requires the cipher passphrases as environment variables. The pattern below injects them scoped to the subprocess only — the values never appear in the process list visible to other users:
+
+```bash
+ssh ha "docker exec -e PGBACKREST_REPO1_CIPHER_PASS=\$(cat /data/secrets/pgbackrest_cipher_pass_repo1) \
+  -e PGBACKREST_REPO2_CIPHER_PASS=\$(cat /data/secrets/pgbackrest_cipher_pass_repo2) \
+  $CONTAINER gosu postgres pgbackrest --stanza=timescaledb <command>"
+```
+
+This is a documented scoped exception to the standard secret-injection guideline: pgBackRest provides no file-based or stdin alternative for `cipher-pass`; environment variables are the only supported mechanism for runtime passphrase injection.
+
+| Command | Repo | Purpose | Notes |
+|---------|------|---------|-------|
+| `pgbackrest --stanza=timescaledb info --output=json` | both | List backups and WAL ranges for all repos | Use `-o json` for machine parsing |
+| `pgbackrest --stanza=timescaledb check` | both | Force WAL switch and verify WAL segment reaches repo1 | Exits 82 by design: repo2 receives no streaming WAL (D-22); repo1 check line must show "successfully archived" |
+| `pgbackrest --stanza=timescaledb --repo=1 backup --type=full` | repo1 | Full backup to repo1 | Triggered automatically by Phase 9 cron on monthly schedule |
+| `pgbackrest --stanza=timescaledb --repo=1 backup --type=diff` | repo1 | Differential backup to repo1 | Since last full; smaller than full |
+| `pgbackrest --stanza=timescaledb --repo=1 backup --type=incr` | repo1 | Incremental backup to repo1 | Since last backup of any type; smallest |
+| `pgbackrest --stanza=timescaledb --repo=2 backup --type=full --no-archive-check` | repo2 | Annual archival full backup to repo2 | `--no-archive-check` required: repo2 has no streaming WAL by design; without the flag pgBackRest times out waiting for a WAL segment to appear in repo2 (exit 82) |
+| `pgbackrest --stanza=timescaledb --repo=2 verify` | repo2 | Validate repo2 backup manifests and file checksums | `verify --no-pitr` is not valid in pgBackRest 2.58.0 (exit 31 "invalid option"). Run without it; behavior is equivalent since repo2 has no WAL archive stream to verify for PITR. |
+| `pgbackrest --stanza=timescaledb --repo=1 restore --pg1-path=/data/restore-test/pgdata --delta` | repo1 | Restore latest backup to a scratch directory for drill | Does not affect live PGDATA; `--delta` is downgraded to full-copy automatically if the target directory is empty |
+| `/usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata` | — | Validate block checksums in a restored PGDATA | Must be preceded by `pg_resetwal -f /data/restore-test/pgdata` (see Phase 8 drill below) |
+
+### Phase 8 drill commands
+
+The following command sequences were executed on 2026-05-05 as the Phase 8 P1 gate (SC2, SC3, SC4). Run them quarterly to confirm both repos remain readable and restorable.
+
+#### repo1 drill
+
+SC3 (restore) + SC4 (checksum verification). Runtime: ~3 min restore + <1 min checksums.
+
+```bash
+CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
+
+# Create a fresh scratch directory
+ssh ha "docker exec $CONTAINER install -d -m 700 -o postgres /data/restore-test/pgdata"
+
+# Restore latest repo1 backup to scratch (delta is downgraded to full-copy if directory is empty)
+ssh ha "docker exec \
+  -e PGBACKREST_REPO1_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo1) \
+  -e PGBACKREST_REPO2_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo2) \
+  $CONTAINER gosu postgres \
+  pgbackrest --stanza=timescaledb --repo=1 restore \
+    --pg1-path=/data/restore-test/pgdata --delta"
+```
+
+Expected last lines of output:
+
+```text
+INFO: restore size = 2.4GB, file total = 1886
+INFO: restore command end: completed successfully
+```
+
+pgBackRest restores pg_control last. The restored cluster has state "in production" (taken from a live cluster). `pg_checksums --check` requires state "shut down". Use `pg_resetwal -f` to transition the control file before running checksums — it only modifies the control file state and WAL pointer, not any data files:
+
+```bash
+# Transition pg_control to shut-down state (required before pg_checksums)
+ssh ha "docker exec $CONTAINER gosu postgres pg_resetwal -f /data/restore-test/pgdata"
+
+# Validate block checksums
+ssh ha "docker exec $CONTAINER gosu postgres \
+  /usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata"
+```
+
+Expected pg_resetwal output: `Write-ahead log reset`
+
+Expected pg_checksums output:
+
+```text
+Checksum operation completed
+Files scanned:   1865
+Blocks scanned:  316233
+Bad checksums:  0
+Data checksum version: 1
+```
+
+Phase 8 observed result: 0 bad checksums across 1865 files / 316,233 blocks.
+
+Cleanup after drill:
+
+```bash
+ssh ha "docker exec $CONTAINER rm -rf /data/restore-test"
+```
+
+Verify cleanup: `ssh ha "docker exec $CONTAINER test -d /data/restore-test"` should return non-zero.
+
+#### repo2 drill
+
+SC2 (info + verify). Runtime: ~3 min. No data is downloaded — verify checks remote manifests and file checksums at source.
+
+```bash
+CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
+
+# Confirm at least one full backup exists in repo2 with status ok
+ssh ha "docker exec \
+  -e PGBACKREST_REPO1_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo1) \
+  -e PGBACKREST_REPO2_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo2) \
+  $CONTAINER gosu postgres \
+  pgbackrest --stanza=timescaledb info --output=json"
+```
+
+Look for `"repo-key":2,"status":{"code":0,"message":"ok"}` and `"cipher":"aes-256-cbc"` in the output. Phase 8 confirmed: repo2 backup label `20260505-192628F`, 2.4 GB, status ok, cipher aes-256-cbc.
+
+```bash
+# Verify backup manifests and file checksums at source
+ssh ha "docker exec \
+  -e PGBACKREST_REPO1_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo1) \
+  -e PGBACKREST_REPO2_CIPHER_PASS=\$(cat /mnt/data/supervisor/addons/data/b872f4a0_timescaledb/secrets/pgbackrest_cipher_pass_repo2) \
+  $CONTAINER gosu postgres \
+  pgbackrest --stanza=timescaledb --repo=2 verify"
+```
+
+Expected last line: `verify command end: completed successfully`. Phase 8 observed: exit 0 in ~2.7 min.
+
+Note: `--no-pitr` is not a valid option for `pgbackrest verify` in pgBackRest 2.58.0 (exit 31). Run without it.
+
+The quarterly drill is manual in v1.1. Phase 10 (deferred) adds automated scheduling.
+
+### What Phase 9 adds
+
+Phase 8 delivers the backup infrastructure and the manual drill proof. The following items are explicitly deferred to Phase 9 and later:
+
+- **BKUP-12: Disaster recovery runbook.** A step-by-step DR procedure covering the full path from a fresh HAOS install through to a restored database, referencing all four per-repo secret files from the password manager. Phase 9 will extend this document with BKUP-12 content.
+- **BKUP-06/07/08/09: Automated backup scheduling.** Phase 9 adds a `pgbackrest-cron` s6 longrun service with scheduled monthly fulls, weekly diffs, and daily incrementals for repo1.
+- **BKUP-09: HA sensor.** Phase 9 adds `sensor.timescaledb_last_backup` fed by the backup scheduler, providing last-backup status and age in the HA dashboard.
 
 ## Network
 

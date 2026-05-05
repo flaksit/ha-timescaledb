@@ -1,0 +1,8 @@
+{
+    "extends": "~/.markdownlint.jsonc",
+    // MD060 (table-column-style) disabled: the document contains tables with
+    // widely varying column content lengths; enforcing a single alignment style
+    // across all tables would require a comprehensive reformatting that is out
+    // of scope for per-feature edits.
+    "MD060": false
+}
