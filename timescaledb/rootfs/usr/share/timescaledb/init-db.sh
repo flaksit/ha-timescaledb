@@ -297,6 +297,27 @@ if bashio::config.true 'backup_enabled'; then
     # Prefix with _ to signal these are internal to the pgbackrest block.
     _backup_any_success=false
 
+    # Render archive-only config (D-22a/D-24): repo1-only view for PG's archive_command.
+    # Hard-fail if render fails: a missing pgbackrest-archive.conf causes every WAL push
+    # to error, accumulating WAL until /data/postgres/pg_wal/ fills and PG crashes (D-05 violation).
+    # Per D-24: render failure of the archive-only config is treated as a full backup setup failure.
+    # _archive_conf_ok guards the stanza-create success path — stanza-create alone is insufficient
+    # to enable WAL archiving when the file archive_command points at does not exist.
+    _archive_conf_ok=true
+    bashio::log.info "Rendering pgbackrest-archive.conf (archive-only, repo1) from app options..."
+    if ! tempio \
+        -conf /data/options.json \
+        -template /etc/pgbackrest/pgbackrest-archive.conf.tmpl \
+        -out /etc/pgbackrest/pgbackrest-archive.conf; then
+        notify_supervisor "pgBackRest archive-only config render failed" \
+            "tempio failed to render pgbackrest-archive.conf — init-db.sh will disable archive_mode (D-24)."
+        bashio::log.error "pgBackRest archive-only config render failed (D-24 hard-fail)"
+        _backup_any_success=false
+        _archive_conf_ok=false
+    fi
+    chown postgres:postgres /etc/pgbackrest/pgbackrest-archive.conf 2>/dev/null || true
+    chmod 640 /etc/pgbackrest/pgbackrest-archive.conf 2>/dev/null || true
+
     # Phase 1: per-repo secrets check and cipher generation.
     # stanza-create does NOT accept --repo (it operates on ALL configured repos at once),
     # so this loop only validates secrets and accumulates ready repos — stanza-create runs
@@ -389,7 +410,10 @@ if bashio::config.true 'backup_enabled'; then
             done
             rm -f "${_stderr_file}"
 
-            if [ "${_stanza_ok}" = "true" ]; then
+            # Only enable WAL archiving if BOTH stanza-create succeeded AND the archive-only
+            # config rendered successfully (D-24). If _archive_conf_ok=false, archive_command
+            # points at a missing file — enabling archive_mode would flood pg_wal/ until crash.
+            if [ "${_stanza_ok}" = "true" ] && [ "${_archive_conf_ok}" = "true" ]; then
                 _backup_any_success=true
             fi
         fi
