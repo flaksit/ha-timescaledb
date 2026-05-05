@@ -5,6 +5,13 @@ PGDATA="/data/postgres"
 SECRETS_DIR="/data/secrets"
 DB_NAME=$(bashio::config 'database')
 
+# Guard against single quotes in DB_NAME — they would break the SQL check query at line ~151.
+# Auto-generated names are safe; this catches user-configured values with special chars.
+if echo "${DB_NAME}" | grep -q "'"; then
+    bashio::log.fatal "Database name '${DB_NAME}' contains a single quote — not supported. Use only alphanumeric characters, underscores, or hyphens."
+    exit 1
+fi
+
 mkdir -p "${SECRETS_DIR}"
 
 # Generate a random password, or use the configured one if set.
@@ -19,6 +26,13 @@ ensure_password() {
     configured_pw=$(bashio::config "${config_key}")
 
     if [ -n "${configured_pw}" ]; then
+        # Reject single quotes: the SQL heredocs embed passwords as SQL string literals
+        # ('${PW}'), so a quote in the password would break the SQL syntax. Auto-generated
+        # passwords use [A-Za-z0-9] only and are always safe; this guards user-set values.
+        if echo "${configured_pw}" | grep -q "'"; then
+            bashio::log.fatal "Password for '${role}' contains a single quote — not supported. Use only alphanumeric characters."
+            exit 1
+        fi
         echo "${configured_pw}" > "${secret_file}"
     elif [ ! -f "${secret_file}" ]; then
         head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32 > "${secret_file}"
