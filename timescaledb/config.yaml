@@ -41,11 +41,11 @@ options:
   backup_enabled: false
   archive_timeout_seconds: 3600
   repo1_sftp_host: ""
-  repo1_sftp_port: 23
+  repo1_sftp_port: 22
   repo1_sftp_user: ""
   repo1_sftp_path: "/"
   repo2_sftp_host: ""
-  repo2_sftp_port: 23
+  repo2_sftp_port: 22
   repo2_sftp_user: ""
   repo2_sftp_path: "/"
 schema:
