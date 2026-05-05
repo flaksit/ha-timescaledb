@@ -41,8 +41,7 @@ archive_mode = on
 # Use the full /usr/bin/ path — on Alpine, /bin/sh is busybox ash which strips
 # PATH to a minimal set in PG's archive_command subshell. A bare `pgbackrest`
 # resolves as "command not found" in that context.
-# archive-push scoped to --repo=1 (D-22): repo2 = annual fulls only, archive-copy=y self-contains WAL for in-backup PITR
-archive_command = 'PGBACKREST_REPO1_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo1 2>/dev/null) PGBACKREST_REPO2_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo2 2>/dev/null) /usr/bin/pgbackrest --stanza=timescaledb archive-push --repo=1 %p'
+archive_command = 'PGBACKREST_REPO1_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo1 2>/dev/null) PGBACKREST_REPO2_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo2 2>/dev/null) /usr/bin/pgbackrest --stanza=timescaledb archive-push %p'
 archive_timeout = {{ .archive_timeout_seconds }}
 {{ else }}
 archive_mode = off
