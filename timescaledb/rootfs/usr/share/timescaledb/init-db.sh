@@ -439,12 +439,18 @@ if bashio::config.true 'backup_enabled'; then
         fi
     fi
 
-    # Fail-safe archive_mode degrade: if every configured repo failed stanza-create, disable WAL
-    # archiving for this boot by patching the rendered postgresql.conf. This prevents unbounded WAL
-    # accumulation on disk when pgbackrest cannot accept archive-push commands.
+    # Fail-safe archive_mode degrade: if every configured repo failed stanza-create (or none were
+    # configured/ready), disable WAL archiving for this boot by patching the rendered postgresql.conf.
+    # This prevents unbounded WAL accumulation on disk when pgbackrest cannot accept archive-push.
     # archive_mode requires a full PG restart to re-enable — the user must fix and restart the app.
     if [ "${_backup_any_success}" = "false" ]; then
-        bashio::log.warning "pgBackRest: all repos failed — disabling archive_mode for this boot (archive_mode=off)"
+        # Differentiate "nothing attempted" (misconfiguration/PG-unavailable) from "all repos failed"
+        # so the log message guides the user to the right remediation step.
+        if [ "${_repos_ready}" -eq 0 ]; then
+            bashio::log.warning "pgBackRest: no repos configured or ready — disabling archive_mode for this boot (archive_mode=off)"
+        else
+            bashio::log.warning "pgBackRest: all repos failed stanza-create — disabling archive_mode for this boot (archive_mode=off)"
+        fi
         sed -i 's/^archive_mode = on$/archive_mode = off/' "${PGDATA}/postgresql.conf"
         bashio::log.warning "pgBackRest: Fix the above errors and restart the container to re-enable WAL archiving."
     fi
