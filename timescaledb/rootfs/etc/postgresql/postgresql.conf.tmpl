@@ -42,10 +42,15 @@ archive_mode = on
 # PATH to a minimal set in PG's archive_command subshell. A bare `pgbackrest`
 # resolves as "command not found" in that context.
 # D-22a: archive-push uses a repo1-only config (--config=...) so WAL never fans to repo2.
-# D-23: --config-include-path=/nonexistent suppresses any future conf.d/*.conf leaks.
+# The explicit --config= flag already suppresses conf.d include-path loading per pgBackRest's
+# loader (verified: pgBackRest 2.58.0 ignores default --config-include-path when --config is
+# set to a non-default path). --config-include-path=/nonexistent was dropped: pgBackRest 2.58.0
+# validates that the specified include path exists and errors with [073] if it does not, causing
+# every archive-push to fail. D-23's goal is met by --config= alone (no conf.d leak possible
+# when the loaded config is pgbackrest-archive.conf which has no repo2 keys).
 # Both REPO1 and REPO2 cipher-pass env vars are injected; REPO2's is harmless when the
 # loaded config has no repo2-* keys — pgBackRest ignores cipher env vars for unknown repos.
-archive_command = 'PGBACKREST_REPO1_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo1 2>/dev/null) PGBACKREST_REPO2_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo2 2>/dev/null) /usr/bin/pgbackrest --config=/etc/pgbackrest/pgbackrest-archive.conf --config-include-path=/nonexistent --stanza=timescaledb archive-push %p'
+archive_command = 'PGBACKREST_REPO1_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo1 2>/dev/null) PGBACKREST_REPO2_CIPHER_PASS=$(cat /data/secrets/pgbackrest_cipher_pass_repo2 2>/dev/null) /usr/bin/pgbackrest --config=/etc/pgbackrest/pgbackrest-archive.conf --stanza=timescaledb archive-push %p'
 archive_timeout = {{ .archive_timeout_seconds }}
 {{ else }}
 archive_mode = off
