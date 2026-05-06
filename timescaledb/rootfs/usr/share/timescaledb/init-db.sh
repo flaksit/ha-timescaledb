@@ -301,8 +301,16 @@ if bashio::config.true 'backup_enabled'; then
             continue
         fi
 
-        # Auto-generate cipher passphrase (idempotent: never overwrites an existing file)
-        ensure_cipher_passphrase "${REPO_ID}"
+        # Auto-generate cipher passphrase (idempotent: never overwrites an existing file).
+        # Guard with || continue: ensure_cipher_passphrase returns 1 for a zero-byte passphrase
+        # file (truncated write). Under set -euo pipefail an unguarded return-1 inside a for
+        # loop aborts the entire script, leaving the temp PG instance running and all remaining
+        # init steps (archive_mode degrade, pg_ctl stop) unreachable. The guard skips this repo
+        # and lets the loop continue to the next without killing init-db.sh.
+        ensure_cipher_passphrase "${REPO_ID}" || {
+            bashio::log.error "pgBackRest ${REPO_ID}: cipher passphrase error — skipping repo"
+            continue
+        }
         KEY_FILE="${SECRETS_DIR}/pgbackrest_id_ed25519_${REPO_ID}"
         KNOWN_FILE="${SECRETS_DIR}/pgbackrest_known_hosts_${REPO_ID}"
 
