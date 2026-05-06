@@ -548,11 +548,206 @@ The quarterly drill is manual in v1.1. Phase 10 (deferred) adds automated schedu
 
 ### What Phase 9 adds
 
-Phase 8 delivers the backup infrastructure and the manual drill proof. The following items are explicitly deferred to Phase 9 and later:
+Phase 9 automates the backup schedule established in Phase 8 and adds observability through
+four Home Assistant sensors.
 
-- **BKUP-12: Disaster recovery runbook.** A step-by-step DR procedure covering the full path from a fresh HAOS install through to a restored database, referencing all four per-repo secret files from the password manager. Phase 9 will extend this document with BKUP-12 content.
-- **BKUP-06/07/08/09: Automated backup scheduling.** Phase 9 adds a `pgbackrest-cron` s6 longrun service with scheduled monthly fulls, weekly diffs, and daily incrementals for repo1.
-- **BKUP-09: HA sensor.** Phase 9 adds `sensor.timescaledb_last_backup` fed by the backup scheduler, providing last-backup status and age in the HA dashboard.
+#### Automated backup schedule
+
+The `pgbackrest-cron` service runs daily at 02:00 UTC without any user action:
+
+| Day | Operation |
+|-----|-----------|
+| 1st Sunday of month | Full backup to repo1, then a diff to start the weekly chain |
+| Other Sundays | Differential backup to repo1 |
+| Monday–Saturday | Incremental backup to repo1 |
+| January 1 | Annual full backup to repo2 (independent of the daily schedule) |
+
+If a backup fails, it is retried up to 6 times (1 initial attempt + 5 retries with
+60s, 120s, 300s, 600s, 900s backoff). After retry exhaustion a persistent notification
+appears in Home Assistant.
+
+#### Observability sensors
+
+Four sensors are updated in Home Assistant after each backup completes:
+
+| Entity | State | Attributes |
+|--------|-------|------------|
+| `sensor.timescaledb_last_backup_repo1` | ISO timestamp of last successful repo1 backup | `backup_type`, `duration_seconds` |
+| `sensor.timescaledb_last_backup_repo2` | ISO timestamp of last successful repo2 backup | `backup_type`, `duration_seconds` |
+| `sensor.timescaledb_backup_repo1_size` | repo1 total backup catalog size (bytes) | `unit_of_measurement: "B"` |
+| `sensor.timescaledb_backup_repo2_size` | repo2 total backup catalog size (bytes) | `unit_of_measurement: "B"` |
+
+`sensor.timescaledb_last_backup_repo2` and `_repo2_size` are only updated on January 1 when the
+annual backup runs. Both size sensors use raw bytes; Home Assistant and Grafana auto-scale the
+display.
+
+> **Note on sensor persistence:** These sensors are created via `POST /api/states` (runtime state,
+> not entity-registry-backed). After a Home Assistant restart the sensor state disappears and
+> reappears only after the next successful backup completes. This is expected — if the sensors
+> are absent after an HA restart, wait for the next 02:00 UTC backup window before investigating.
+
+### Disaster recovery runbook (BKUP-12)
+
+This runbook covers the full path from a failed or replaced Raspberry Pi to a verified running
+database. Follow these steps in order. The runbook assumes all four secrets are in your password
+manager (the Phase 8 setup checkpoint confirmed this).
+
+> **Warning:** If the Pi NVMe fails and the cipher passphrases were not copied to a password
+> manager, the affected repo's encrypted backup is permanently unrecoverable.
+
+#### Step 1. Provision a new HAOS instance
+
+Install Home Assistant OS on the replacement hardware and complete initial setup. No HA
+configuration is needed beyond basic system setup — backups are database-level, not HA-level.
+
+#### Step 2. Install the TimescaleDB app
+
+In **Settings > Apps > App Store**, click the three-dot menu, add the repository
+`https://github.com/flaksic/ha-timescaledb`, find "TimescaleDB" and click **Install**.
+Do NOT start it yet — start it after secrets are staged in Step 4.
+
+#### Step 3. Locate the app's secrets directory
+
+The host path for app data is:
+
+```
+/mnt/data/supervisor/addons/data/<slug>_timescaledb/secrets/
+```
+
+Where `<slug>` is visible in **Settings > Apps > TimescaleDB** (typically `b872f4a0`).
+
+```bash
+SECRETS=/mnt/data/supervisor/addons/data/<slug>_timescaledb/secrets
+ssh ha "mkdir -p $SECRETS"
+```
+
+#### Step 4. Stage secrets from your password manager
+
+Retrieve all four secrets from your password manager and copy them to the HAOS host.
+
+Use `pass` to pipe secrets directly to the HAOS host without them appearing in terminal
+output or shell history. Replace `<pass-path>` with your actual password store path:
+
+```bash
+# Pipe cipher passphrases from password manager directly to remote file
+pass show <pass-path>/pgbackrest_cipher_pass_repo1 | \
+  ssh ha "install -m 600 /dev/stdin $SECRETS/pgbackrest_cipher_pass_repo1"
+pass show <pass-path>/pgbackrest_cipher_pass_repo2 | \
+  ssh ha "install -m 600 /dev/stdin $SECRETS/pgbackrest_cipher_pass_repo2"
+
+# Pipe SSH private keys (multi-line PEM content)
+pass show <pass-path>/pgbackrest_id_ed25519_repo1 | \
+  ssh ha "install -m 600 /dev/stdin $SECRETS/pgbackrest_id_ed25519_repo1"
+pass show <pass-path>/pgbackrest_id_ed25519_repo2 | \
+  ssh ha "install -m 600 /dev/stdin $SECRETS/pgbackrest_id_ed25519_repo2"
+```
+
+If you use a different password manager, paste each secret using `cat` with history disabled:
+
+```bash
+set +o history                              # disable shell history for this session
+ssh ha "cat > $SECRETS/pgbackrest_cipher_pass_repo1"   # paste, then Ctrl-D
+ssh ha "cat > $SECRETS/pgbackrest_cipher_pass_repo2"
+ssh ha "cat > $SECRETS/pgbackrest_id_ed25519_repo1"
+ssh ha "cat > $SECRETS/pgbackrest_id_ed25519_repo2"
+ssh ha "chmod 600 $SECRETS/pgbackrest_cipher_pass_repo1 \
+  $SECRETS/pgbackrest_cipher_pass_repo2 \
+  $SECRETS/pgbackrest_id_ed25519_repo1 \
+  $SECRETS/pgbackrest_id_ed25519_repo2"
+set -o history
+```
+
+Re-generate known_hosts files from the SFTP hosts (host fingerprints do not change unless
+the Hetzner Storage Box is migrated):
+
+```bash
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 <repo1-sftp-host> | \
+  ssh ha "cat > $SECRETS/pgbackrest_known_hosts_repo1"
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 <repo2-sftp-host> | \
+  ssh ha "cat > $SECRETS/pgbackrest_known_hosts_repo2"
+```
+
+Set ownership (uid 70 = postgres in the app container):
+
+```bash
+ssh ha "chown 70:70 $SECRETS/pgbackrest_cipher_pass_repo1 \
+  $SECRETS/pgbackrest_cipher_pass_repo2 \
+  $SECRETS/pgbackrest_id_ed25519_repo1 \
+  $SECRETS/pgbackrest_id_ed25519_repo2 \
+  $SECRETS/pgbackrest_known_hosts_repo1 \
+  $SECRETS/pgbackrest_known_hosts_repo2"
+```
+
+#### Step 5. Configure and start the app
+
+In **Settings > Apps > TimescaleDB**, set the same SFTP options as the original installation
+(repo1/repo2 host, port, user, path; `backup_enabled: true`). Start the app.
+
+The init script will:
+
+1. Detect the existing cipher passphrases (files already present — not regenerated)
+2. Run `pgbackrest stanza-create` against both repos
+3. Enable WAL archiving
+
+Confirm in the app log: `pgBackRest: backup provisioning complete — WAL archiving active`
+
+#### Step 6. Stop PostgreSQL and restore the backup
+
+The restore overwrites the data directory. Stop PostgreSQL cleanly:
+
+```bash
+CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
+ssh ha "docker exec $CONTAINER gosu postgres pg_ctl stop -D /data/postgres -m fast"
+```
+
+Run the restore. This replaces `/data/postgres` with the contents of the most recent backup
+in repo1. Replace `--repo=1` with `--repo=2` to restore from the annual archival backup:
+
+```bash
+ssh ha "docker exec \
+  -e PGBACKREST_REPO1_CIPHER_PASS=\$(cat $SECRETS/pgbackrest_cipher_pass_repo1) \
+  -e PGBACKREST_REPO2_CIPHER_PASS=\$(cat $SECRETS/pgbackrest_cipher_pass_repo2) \
+  $CONTAINER gosu postgres \
+  pgbackrest --stanza=timescaledb --repo=1 \
+    restore --pg1-path=/data/postgres --delta"
+```
+
+Expected final output line: `restore command end: completed successfully`
+
+#### Step 7. Start PostgreSQL and verify row counts
+
+Restart the app (or start PostgreSQL directly via the app's restart button). PostgreSQL will
+enter crash recovery on the restored cluster — this is normal and completes automatically.
+
+After the app log shows `Database 'homeassistant' with TimescaleDB ready`, verify data:
+
+```bash
+ssh ha "docker exec $CONTAINER psql -h /tmp -U postgres -d homeassistant \
+  -c 'SELECT count(*), max(time), min(time) FROM states'"
+```
+
+The row count should match the last known count within roughly 1 hour of unarchived WAL
+(bounded by `archive_timeout_seconds`, default 3600s). The `max(time)` value confirms the
+restore point.
+
+#### Step 8. Reconnect Home Assistant integrations
+
+Re-install or reconfigure HA integrations that write to TimescaleDB:
+
+- The ha-timescaledb-recorder integration (HACS): re-install from HACS if needed; it
+  auto-reconnects on the next restart.
+
+#### SCD2 integrity spot-check (optional)
+
+Verify that SCD2 dimension tables are intact and the chain is unbroken:
+
+```bash
+ssh ha "docker exec $CONTAINER psql -h /tmp -U postgres -d homeassistant -c \
+  'SELECT count(*) FROM dim_entities WHERE valid_to IS NULL'"
+```
+
+This returns the count of currently-active entity rows (`valid_to = NULL` = current version).
+A non-zero result with counts matching the original metadata table confirms SCD2 integrity.
 
 ## Network
 
