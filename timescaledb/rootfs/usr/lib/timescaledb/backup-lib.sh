@@ -85,7 +85,7 @@ classify_pgbackrest_error() {
 update_ha_sensor() {
     local entity_id="$1"
     local state="$2"
-    local attr_json="${3:-\{\}}"
+    local attr_json="${3:-{}}"
 
     if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
         bashio::log.warning "update_ha_sensor: SUPERVISOR_TOKEN unavailable — sensor '${entity_id}' not updated (backup succeeded)"
