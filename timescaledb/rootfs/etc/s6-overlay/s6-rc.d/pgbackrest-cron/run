@@ -1,0 +1,231 @@
+#!/command/with-contenv bashio
+# pgbackrest-cron: s6 longrun service that runs the daily pgBackRest backup schedule.
+# Wakes at 02:00 UTC daily, dispatches full/diff/incr to repo1 per calendar (BKUP-06),
+# and annual full to repo2 on Jan 1 (D-06). Retry logic per BKUP-07 / D-03.
+# Sources backup-lib.sh for supervisor API helpers (D-01).
+#
+# WHY set -uo pipefail and NOT -e: the outer while-true loop must continue after any
+# individual backup failure. With -e the first failed pgbackrest call would abort the
+# entire script, leaving the container without further backup attempts until restart.
+# D-05 / T-09-06: backup failures must never propagate to the postgres longrun.
+set -uo pipefail
+
+PGDATA="/data/postgres"
+SECRETS_DIR="/data/secrets"
+
+# shellcheck source=rootfs/usr/lib/timescaledb/backup-lib.sh
+. /usr/lib/timescaledb/backup-lib.sh
+
+# Idle permanently when backup is disabled. The s6 service is always started (it is
+# registered in user/contents.d), but it must not attempt any pgbackrest calls when
+# backup_enabled=false.
+#
+# WHY while-loop and not 'exec sleep infinity': Alpine BusyBox sleep does not accept
+# 'infinity' as an argument — it exits immediately with an error, causing s6 to
+# restart-loop the service. A while-true sleep 86400 loop stays alive indefinitely
+# on all BusyBox versions.
+if ! bashio::config.true 'backup_enabled'; then
+    bashio::log.info "pgbackrest-cron: backup_enabled=false — service idle"
+    while true; do sleep 86400; done
+fi
+bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loop"
+
+# ---------------------------------------------------------------------------
+# run_backup <repo_id> <backup_type> [extra_pgbackrest_args...]
+#
+# Runs one pgbackrest backup operation with retry on transient failures.
+# Retry loop: 6 iterations = 1 initial attempt (delay=0) + 5 retries.
+# Delays: 0/60/120/300/600/900s  (D-03 / BKUP-07: 5-attempt with backoff).
+# Max total wait before failure: 0+60+120+300+600+900 = 1980s (~33 min).
+#
+# On success: updates sensor.timescaledb_last_backup_<repo_id> (ISO timestamp +
+#   backup_type/duration attrs) and sensor.timescaledb_backup_<repo_id>_size (bytes).
+# On failure: calls notify_backup_failure and logs an error; the caller continues.
+#
+# WHY gosu postgres: s6 run scripts execute as root; pgbackrest must run as the
+# postgres OS user to access $PGDATA and UNIX socket (consistent with postgres/run).
+#
+# WHY $(cat ... 2>/dev/null) for cipher passphrases: reads secret from file at
+# invocation time, scoping the value to the env of this one pgbackrest call only.
+# The passphrase never appears in /proc/<pid>/cmdline (T-09-05). Pattern matches
+# init-db.sh stanza-create block.
+# ---------------------------------------------------------------------------
+run_backup() {
+    local repo_id="$1"
+    local backup_type="$2"
+    shift 2
+    local extra_args=("$@")
+
+    local _start
+    _start=$(date +%s)
+    local _stderr_file
+    _stderr_file=$(mktemp)
+    local _backup_ok=false
+    local _attempt=0
+    local _exit_code
+
+    # for loop: 6 iterations = 1 initial attempt (delay=0) + 5 retries.
+    # Delay 0 means no sleep before attempt 1; subsequent delays are 60/120/300/600/900s.
+    # D-03 / BKUP-07: 5-attempt with backoff (counting from attempt 1, not attempt 0).
+    for _delay in 0 60 120 300 600 900; do
+        [ "${_delay}" -gt 0 ] && sleep "${_delay}"
+        _attempt=$(( _attempt + 1 ))
+
+        bashio::log.info "pgbackrest-cron: ${repo_id} ${backup_type} attempt ${_attempt}/6..."
+        _exit_code=0
+        env \
+            "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
+            "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
+            gosu postgres /usr/bin/pgbackrest \
+            --stanza=timescaledb \
+            "--repo=${repo_id##repo}" \
+            --type="${backup_type}" \
+            "${extra_args[@]}" \
+            2>"${_stderr_file}" || _exit_code=$?
+
+        if [ "${_exit_code}" -eq 0 ]; then
+            _backup_ok=true
+            break
+        fi
+
+        local _classification
+        _classification=$(classify_pgbackrest_error "${_exit_code}" "${_stderr_file}")
+
+        if [ "${_classification}" = "non-transient" ]; then
+            bashio::log.error "pgbackrest-cron: ${repo_id} non-transient error (exit ${_exit_code}) — not retrying"
+            break
+        fi
+
+        if [ "${_attempt}" -eq 6 ]; then
+            bashio::log.error "pgbackrest-cron: ${repo_id} ${backup_type} retry exhaustion after ${_attempt} attempts (exit ${_exit_code})"
+        else
+            bashio::log.warning "pgbackrest-cron: ${repo_id} transient error (exit ${_exit_code}), attempt ${_attempt}/6 — retrying in ${_delay}s"
+        fi
+    done
+
+    local _duration
+    _duration=$(( $(date +%s) - _start ))
+
+    if [ "${_backup_ok}" = "true" ]; then
+        local _repo_key="${repo_id##repo}"
+
+        # Get repo size from pgbackrest info JSON.
+        # WHY .backup[] not .repo[]: pgBackRest info JSON nests size under backup entries
+        # (.backup[].info.size), not under repo status (.repo[]). The .repo[] array contains
+        # code/cipher status but NOT size data. Confirmed from Phase 8 live JSON output
+        # (08-06-SUMMARY.md): .backup[0].info.size = 2607498442 for repo1.
+        local _size_json
+        _size_json=$(env \
+            "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
+            "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
+            gosu postgres /usr/bin/pgbackrest \
+            --stanza=timescaledb \
+            "--repo=${_repo_key}" \
+            info --output=json 2>/dev/null || echo '[]')
+
+        # CORRECT path: .[0].backup[] filtered by repo-key integer, take last (most recent), .info.size
+        # 'last' because pgBackRest lists backups chronologically, most recent last.
+        local _size
+        _size=$(printf '%s' "${_size_json}" | jq -r \
+            ".[0].backup | map(select(.database.\"repo-key\" == ${_repo_key})) | last | .info.size // 0" \
+            2>/dev/null || echo "0")
+
+        local _ts
+        _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        local _attr_json
+        _attr_json=$(jq -nc --arg t "${backup_type}" --argjson d "${_duration}" \
+            '{"backup_type":$t,"duration_seconds":$d}')
+
+        update_ha_sensor "sensor.timescaledb_last_backup_${repo_id}" "${_ts}" "${_attr_json}"
+
+        local _size_attr
+        _size_attr=$(jq -nc '{"unit_of_measurement":"B"}')
+        update_ha_sensor "sensor.timescaledb_backup_${repo_id}_size" "${_size:-0}" "${_size_attr}"
+
+        bashio::log.info "pgbackrest-cron: ${repo_id} ${backup_type} backup complete (${_duration}s, ${_size:-?} bytes)"
+    else
+        local _stderr_tail
+        _stderr_tail=$(tail -c 1024 "${_stderr_file}" 2>/dev/null || true)
+        notify_backup_failure "${repo_id}" "${backup_type}" "${_stderr_tail}"
+        bashio::log.error "pgbackrest-cron: ${repo_id} ${backup_type} backup failed after ${_attempt} attempt(s)"
+    fi
+
+    rm -f "${_stderr_file}"
+}
+
+# ---------------------------------------------------------------------------
+# dispatch_for_date <date_str>
+#
+# date_str format: YYYY-MM-DD (from `date +"%Y-%m-%d"`)
+#
+# Repo1 calendar dispatch (BKUP-06):
+#   1st Sunday of month → full backup then diff (the diff starts a chain so the
+#     week's incrementals expire via retention-diff rather than living 3 years under
+#     the full; this is not redundant — it is BKUP-06 design intent).
+#   Other Sundays → diff
+#   Mon–Sat → incr
+#
+# Repo2 annual dispatch (D-06):
+#   Jan 1 → full backup with --no-archive-check (repo2 has no streaming WAL;
+#     without this flag pgbackrest blocks waiting for a WAL segment that never arrives).
+#
+# WHY _dow from `date +%u`: POSIX ISO 8601 — 1=Mon, 7=Sun. BusyBox date supports %u.
+# WHY shell arithmetic for _first_sunday: _day -le 7 means today falls in the first
+#   7-day window; combined with _dow=7 (Sunday) this is precisely the first Sunday.
+# ---------------------------------------------------------------------------
+dispatch_for_date() {
+    local date_str="$1"
+    local _year="${date_str:0:4}"
+    local _month="${date_str:5:2}"
+    local _day="${date_str:8:2}"
+    local _dow
+    _dow=$(date +%u)
+
+    local _first_sunday=false
+    [ "${_dow}" -eq 7 ] && [ "${_day}" -le 7 ] && _first_sunday=true
+
+    # Repo1 calendar dispatch
+    if [ "${_first_sunday}" = "true" ]; then
+        bashio::log.info "pgbackrest-cron: first Sunday — dispatching repo1 full then diff"
+        run_backup repo1 full
+        # Diff after full creates the diff chain: weekly incrementals expire via retention-diff.
+        # Not redundant — intentional per BKUP-06 design.
+        run_backup repo1 diff
+    elif [ "${_dow}" -eq 7 ]; then
+        bashio::log.info "pgbackrest-cron: Sunday — dispatching repo1 diff"
+        run_backup repo1 diff
+    else
+        bashio::log.info "pgbackrest-cron: weekday — dispatching repo1 incr"
+        run_backup repo1 incr
+    fi
+
+    # Repo2 annual dispatch — Jan 1 only (independent of repo1 result)
+    if [ "${_month}" = "01" ] && [ "${_day}" = "01" ]; then
+        bashio::log.info "pgbackrest-cron: Jan 1 — dispatching repo2 annual full (--no-archive-check)"
+        run_backup repo2 full --no-archive-check
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Main loop: sleep until next 02:00 UTC, then dispatch.
+#
+# WHY POSIX arithmetic not 'date -d': Alpine BusyBox date does not support the
+# -d 'tomorrow 02:00' syntax. Only $(date +%s) and shell arithmetic are used.
+# _today_midnight = epoch of 00:00 UTC today (truncate seconds-since-epoch to full days).
+# _target = _today_midnight + 7200 (7200s = 2h = 02:00 UTC).
+# If 02:00 today already passed, advance _target by 86400s (one day).
+# ---------------------------------------------------------------------------
+while true; do
+    _now=$(date +%s)
+    _today_midnight=$(( _now - (_now % 86400) ))
+    _target=$(( _today_midnight + 7200 ))  # 02:00 UTC = 2 * 3600 seconds past midnight
+    [ "${_target}" -le "${_now}" ] && _target=$(( _target + 86400 ))
+    _sleep=$(( _target - _now ))
+    bashio::log.info "pgbackrest-cron: sleeping ${_sleep}s until next 02:00 UTC"
+    sleep "${_sleep}"
+
+    _today=$(date +"%Y-%m-%d")
+    bashio::log.info "pgbackrest-cron: woke at 02:00 UTC for ${_today}"
+    dispatch_for_date "${_today}"
+done
