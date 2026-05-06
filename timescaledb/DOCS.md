@@ -451,6 +451,40 @@ This is a documented scoped exception to the standard secret-injection guideline
 | `pgbackrest --stanza=timescaledb --repo=1 restore --pg1-path=/data/restore-test/pgdata --delta` | repo1 | Restore latest backup to a scratch directory for drill | Does not affect live PGDATA; `--delta` is downgraded to full-copy automatically if the target directory is empty |
 | `/usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata` | — | Validate block checksums in a restored PGDATA | Must be preceded by `pg_resetwal -f /data/restore-test/pgdata` (see Phase 8 drill below) |
 
+#### Restore to a new instance
+
+To restore a backup to a Docker container on a laptop or cloud server — for example, after a
+hardware failure or for an offline drill — use the `verify-restore` script:
+
+```bash
+./scripts/verify-restore/verify-restore.sh --repo 1
+```
+
+The script:
+
+1. Pulls secrets from the HA host (or from your `pass` store if the Pi is offline)
+2. Starts a throwaway `timescale/timescaledb:latest-pg18` Docker container
+3. Installs pgBackRest and restores the most recent backup from the chosen repo
+4. Queries both the restored database and the live HA instance to confirm row counts match
+5. Cleans up the container and temp files on exit
+
+See [`scripts/verify-restore/README.md`](../scripts/verify-restore/README.md) for flags,
+credential modes, and prerequisites.
+
+For offline use when the Pi is unavailable, use `--pgbackrest-conf` to provide a local
+pgbackrest.conf and `--pass-path` to pull secrets from your password manager:
+
+```bash
+./scripts/verify-restore/verify-restore.sh \
+  --repo 1 \
+  --pgbackrest-conf ~/pgbackrest.conf \
+  --pass-path home-assistant/backups
+```
+
+To restore to a fresh Pi (disaster recovery), follow the
+[DR runbook](#disaster-recovery-runbook-bkup-12) instead — that procedure restores directly
+to `/data/postgres` after staging secrets.
+
 ### Phase 8 drill commands
 
 The following command sequences were executed on 2026-05-05 as the Phase 8 P1 gate (SC2, SC3, SC4). Run them quarterly to confirm both repos remain readable and restorable.
@@ -610,7 +644,7 @@ Do NOT start it yet — start it after secrets are staged in Step 4.
 
 The host path for app data is:
 
-```
+```text
 /mnt/data/supervisor/addons/data/<slug>_timescaledb/secrets/
 ```
 
