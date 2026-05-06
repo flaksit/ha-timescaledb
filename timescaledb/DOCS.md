@@ -384,6 +384,26 @@ ssh ha "cat $SECRETS/pgbackrest_id_ed25519_repo2"
 
 The cipher passphrases are immutable. After stanza-create, the app never regenerates them. Permanent loss of a passphrase means permanent loss of access to that repo's backups.
 
+#### Phase 9: automated cron and observability sensors
+
+If you are running Phase 9 or later, the `pgbackrest-cron` s6 longrun service starts
+automatically with the app — no manual cron entry or scheduler configuration is needed.
+Backups run daily at 02:00 UTC according to the schedule in
+[What Phase 9 adds](#what-phase-9-adds).
+
+After each successful backup, four Home Assistant sensors are updated:
+
+| Entity | What it shows |
+|--------|---------------|
+| `sensor.timescaledb_last_backup_repo1` | Timestamp of last successful repo1 backup |
+| `sensor.timescaledb_last_backup_repo2` | Timestamp of last successful repo2 backup |
+| `sensor.timescaledb_backup_repo1_size` | repo1 backup catalog total size (bytes) |
+| `sensor.timescaledb_backup_repo2_size` | repo2 backup catalog total size (bytes) |
+
+These sensors are created via `POST /api/states` (runtime state, not entity-registry-backed).
+After a Home Assistant restart the sensors are absent until the next 02:00 UTC backup window
+completes successfully — this is expected behaviour, not a failure.
+
 ### Capacity Planning
 
 Storage estimates based on live system measurements (verified 2026-04-16):
