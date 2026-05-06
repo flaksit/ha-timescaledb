@@ -99,7 +99,11 @@ run_backup() {
         if [ "${_attempt}" -eq 6 ]; then
             bashio::log.error "pgbackrest-cron: ${repo_id} ${backup_type} retry exhaustion after ${_attempt} attempts (exit ${_exit_code})"
         else
-            bashio::log.warning "pgbackrest-cron: ${repo_id} transient error (exit ${_exit_code}), attempt ${_attempt}/6 — retrying in ${_delay}s"
+            # WHY no "in Xs": _delay is the delay that just elapsed (consumed at the start
+            # of this iteration by 'sleep "${_delay}"'), not the upcoming one. Reporting it
+            # would mislead operators into thinking the next retry is immediate when it may
+            # be up to 900s away. Use a neutral message rather than a wrong value.
+            bashio::log.warning "pgbackrest-cron: ${repo_id} transient error (exit ${_exit_code}), attempt ${_attempt}/6 — retrying after backoff"
         fi
     done
 
