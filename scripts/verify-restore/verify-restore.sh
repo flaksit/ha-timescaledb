@@ -238,8 +238,14 @@ _info_json=$(docker exec \
 
 # Extract stop timestamp of the most recent backup for this repo.
 # .backup[] entries carry timestamps; we select by database.repo-key matching REPO.
+# WHY || echo "0" fallback: when _info_json is '[]' (empty stanza — no backups have run
+# yet, or the repo was never initialized), jq evaluates 'null | map(...)' and exits with
+# "Cannot iterate over null" (exit code 5). Under set -euo pipefail this aborts the
+# script before the freshness check runs. The fallback produces "0" so the explicit
+# _backup_stop==0 guard below can report a clear FAIL instead of a crash.
 _backup_stop=$(printf '%s' "${_info_json}" | jq -r \
-  ".[0].backup | map(select(.database.\"repo-key\" == ${REPO})) | last | .timestamp.stop // 0")
+  ".[0].backup | map(select(.database.\"repo-key\" == ${REPO})) | last | .timestamp.stop // 0" \
+  2>/dev/null || echo "0")
 
 # ────────────────────────────────────────────────────────────────────────────
 # Run pgbackrest restore into the stopped PGDATA
@@ -278,7 +284,14 @@ fi
 
 _age=$(( _now - _backup_stop ))
 echo "Backup stop timestamp: ${_backup_stop} (${_age}s ago, limit: ${_max_age}s)"
-if [[ "$_backup_stop" -gt "$(( _now - _max_age ))" ]]; then
+# _backup_stop==0 means jq found no backup entries (empty or uninitialized stanza).
+# Handle this explicitly before the arithmetic comparison: comparing 0 against the
+# freshness window would always produce a misleading "N seconds ago" message rather
+# than surfacing the real problem (no backups exist for this repo).
+if [[ "$_backup_stop" == "0" ]]; then
+  echo "FAIL: no backup found for repo${REPO} (stanza empty or not initialized)"
+  _freshness_ok=false
+elif [[ "$_backup_stop" -gt "$(( _now - _max_age ))" ]]; then
   echo "PASS: backup freshness check (stop_time within allowed window for repo${REPO})"
 else
   echo "FAIL: backup stop_time is ${_age}s ago, exceeds ${_max_age}s limit for repo${REPO}"
