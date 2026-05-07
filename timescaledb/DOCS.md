@@ -400,9 +400,10 @@ After each successful backup, four Home Assistant sensors are updated:
 | `sensor.timescaledb_backup_repo1_size` | repo1 backup catalog total size (bytes) |
 | `sensor.timescaledb_backup_repo2_size` | repo2 backup catalog total size (bytes) |
 
-These sensors are created via `POST /api/states` (runtime state, not entity-registry-backed).
-After a Home Assistant restart the sensors are absent until the next 02:00 UTC backup window
-completes successfully — this is expected behaviour, not a failure.
+These sensors are registered via MQTT discovery. After a Home Assistant restart the sensors
+show as `unavailable` until the next 02:00 UTC backup window completes — the entities remain
+visible in your dashboards and automations. The last known state is restored automatically when
+HA reconnects to the MQTT broker.
 
 ### Capacity Planning
 
@@ -635,10 +636,9 @@ Four sensors are updated in Home Assistant after each backup completes:
 annual backup runs. Both size sensors use raw bytes; Home Assistant and Grafana auto-scale the
 display.
 
-> **Note on sensor persistence:** These sensors are created via `POST /api/states` (runtime state,
-> not entity-registry-backed). After a Home Assistant restart the sensor state disappears and
-> reappears only after the next successful backup completes. This is expected — if the sensors
-> are absent after an HA restart, wait for the next 02:00 UTC backup window before investigating.
+These sensors persist across Home Assistant restarts. They are registered via MQTT discovery
+with retained messages — after a restart the sensors show as `unavailable` until the broker
+reconnects (typically seconds), then restore to their last known state. No action is required.
 
 ### Disaster recovery runbook (BKUP-12)
 

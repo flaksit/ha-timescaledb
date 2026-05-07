@@ -30,6 +30,18 @@ if ! bashio::config.true 'backup_enabled'; then
 fi
 bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loop"
 
+# Pre-publish MQTT discovery config for all four backup sensors so entities appear in HA
+# immediately on container start, not only after the first 02:00 UTC backup completes.
+# WHY pre-publish: without this, sensors are absent from HA until the first backup runs
+# after deployment. Pre-publishing makes them visible as 'unavailable' from day one.
+# update_ha_sensor handles the MQTT publish; calling it with empty/zero state here only
+# registers the discovery config (state published on each backup run as normal).
+bashio::log.info "pgbackrest-cron: pre-publishing MQTT discovery config for backup sensors"
+update_ha_sensor "sensor.timescaledb_backup_last_backup_repo1" "unknown" '{}'
+update_ha_sensor "sensor.timescaledb_backup_last_backup_repo2" "unknown" '{}'
+update_ha_sensor "sensor.timescaledb_backup_repo1_size" "0" '{"unit_of_measurement":"B"}'
+update_ha_sensor "sensor.timescaledb_backup_repo2_size" "0" '{"unit_of_measurement":"B"}'
+
 # ---------------------------------------------------------------------------
 # run_backup <repo_id> <backup_type> [extra_pgbackrest_args...]
 #
@@ -141,7 +153,9 @@ run_backup() {
         _attr_json=$(jq -nc --arg t "${backup_type}" --argjson d "${_duration}" \
             '{"backup_type":$t,"duration_seconds":$d}')
 
-        update_ha_sensor "sensor.timescaledb_last_backup_${repo_id}" "${_ts}" "${_attr_json}"
+        # Entity ID uses HA MQTT discovery default naming (device slug + name slug, no object_id).
+        # Full entity_id: sensor.timescaledb_backup_last_backup_repo1 / _repo2.
+        update_ha_sensor "sensor.timescaledb_backup_last_backup_${repo_id}" "${_ts}" "${_attr_json}"
 
         local _size_attr
         _size_attr=$(jq -nc '{"unit_of_measurement":"B"}')
