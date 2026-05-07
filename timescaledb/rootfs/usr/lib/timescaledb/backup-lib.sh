@@ -72,38 +72,98 @@ classify_pgbackrest_error() {
     fi
 }
 
-# Update an HA sensor state via supervisor API. Non-fatal: if SUPERVISOR_TOKEN is absent
-# or the call fails, logs a specific named warning and returns 0 — the backup result is
-# never lost due to a reporting failure (D-04). The named warning distinguishes
-# 'token absent' vs 'curl failed' so operators know which condition occurred.
+# Update an HA sensor via MQTT discovery. Non-fatal: if SUPERVISOR_TOKEN is absent or any
+# curl call fails, logs a named warning and returns 0 — the backup result is never lost due
+# to a reporting failure (D-04).
 #
-# NOTE: /api/states creates runtime state only — not entity-registry backed. Sensor state
-# is absent until the next successful backup after an HA restart. This is expected behavior.
+# WHY MQTT not the HA REST states endpoint: the REST endpoint creates runtime-only state
+# that disappears after HA restart. MQTT retained messages are stored in the Mosquitto
+# broker and replayed when HA reconnects — entities show as 'unavailable' (not missing)
+# after restart and recover to their last value without waiting for the next backup.
+#
+# Publishes three retained messages: discovery config (entity registration), state, attributes.
+# Discovery config is idempotent — republishing with the same unique_id is safe.
 #
 # Usage: update_ha_sensor <entity_id> <state> [attr_json]
+#   entity_id: full HA entity_id, e.g. sensor.timescaledb_last_backup_repo1
+#   state:     state string (ISO timestamp or byte count as string)
 #   attr_json: optional JSON object string; defaults to {} when not provided
 update_ha_sensor() {
     local entity_id="$1"
     local state="$2"
     local attr_json="${3:-{}}"
 
+    # Strip sensor. prefix to get the id used for topic routing and unique_id.
+    # Not set as a discovery payload field — HA default naming derives entity_id from
+    # device slug + name slug automatically (no explicit id override needed).
+    local _oid
+    _oid="${entity_id#sensor.}"
+
+    # Determine device_class: timestamp sensors are last_backup_*, size sensors have none.
+    local _device_class
+    case "${_oid}" in
+        timescaledb_last_backup_*) _device_class="timestamp" ;;
+        *) _device_class="" ;;
+    esac
+
     if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
         bashio::log.warning "update_ha_sensor: SUPERVISOR_TOKEN unavailable — sensor '${entity_id}' not updated (backup succeeded)"
         return 0
     fi
 
-    local payload
-    payload=$(jq -nc --arg s "${state}" --argjson a "${attr_json}" '{"state":$s,"attributes":$a}')
+    # Human-readable name: underscores → spaces. HA uses this to derive the entity_id suffix
+    # (device slug + name slug). HA default naming is used — no explicit id override in payload.
+    local _name
+    _name=$(printf '%s' "${_oid}" | tr '_' ' ')
 
-    # SUPERVISOR_TOKEN goes in the Authorization header only — NEVER in URL or log output
-    if ! curl -fsS --max-time 10 \
-        -X POST \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-        -d "${payload}" \
-        "http://supervisor/core/api/states/${entity_id}" 2>/dev/null; then
-        bashio::log.warning "update_ha_sensor: failed to update sensor '${entity_id}' via supervisor API (HTTP error or timeout)"
-    fi
+    # Build discovery config JSON. device_class is conditionally included only for timestamp
+    # sensors — omitting it for size sensors avoids HA validation errors.
+    local _config_json
+    _config_json=$(jq -nc \
+        --arg nm "${_name}" \
+        --arg uid "${_oid}" \
+        --arg st "homeassistant/sensor/timescaledb_backup/${_oid}/state" \
+        --arg at "homeassistant/sensor/timescaledb_backup/${_oid}/attrs" \
+        --arg dc "${_device_class}" \
+        '{
+          name: $nm,
+          unique_id: $uid,
+          state_topic: $st,
+          json_attributes_topic: $at,
+          device: { identifiers: ["ha_timescaledb_backup"], name: "TimescaleDB Backup" }
+        } | if $dc != "" then . + {device_class: $dc} else . end')
+
+    # Helper: publish one MQTT message via the supervisor proxy. Uses || true (not if !)
+    # so that retain=true is handled as a JSON boolean, not as a shell condition.
+    # SUPERVISOR_TOKEN goes in the Authorization header only — NEVER in URL or log output.
+    _mqtt_publish() {
+        local _topic="$1" _payload="$2" _retain="$3"
+        local _pub
+        _pub=$(jq -nc --arg t "${_topic}" --arg p "${_payload}" --argjson r "${_retain}" \
+            '{topic: $t, payload: $p, retain: $r}')
+        curl -fsS --max-time 10 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            -d "${_pub}" \
+            http://supervisor/core/api/services/mqtt/publish 2>/dev/null || true
+    }
+
+    # Retained discovery config: broker stores this; HA recreates entity on restart.
+    # Publish on every backup run — idempotent since unique_id is stable.
+    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/config" \
+        "${_config_json}" true
+
+    # Retained state: broker replays on HA reconnect; entity shows last known value.
+    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/state" \
+        "${state}" true
+
+    # Retained attributes: includes backup_type/duration_seconds or unit_of_measurement.
+    # attr_json is passed from run as a JSON object string; publish the raw string as payload.
+    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/attrs" \
+        "${attr_json}" true
+
+    bashio::log.info "update_ha_sensor: published MQTT discovery + state for '${entity_id}'"
     return 0
 }
 
