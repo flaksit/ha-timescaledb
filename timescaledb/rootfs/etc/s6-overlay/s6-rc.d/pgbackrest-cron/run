@@ -37,8 +37,8 @@ bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loo
 # update_ha_sensor handles the MQTT publish; calling it with empty/zero state here only
 # registers the discovery config (state published on each backup run as normal).
 bashio::log.info "pgbackrest-cron: pre-publishing MQTT discovery config for backup sensors"
-update_ha_sensor "sensor.timescaledb_backup_last_backup_repo1" "unknown" '{}'
-update_ha_sensor "sensor.timescaledb_backup_last_backup_repo2" "unknown" '{}'
+update_ha_sensor "sensor.timescaledb_backup_last_backup_repo1" "unavailable" '{}'
+update_ha_sensor "sensor.timescaledb_backup_last_backup_repo2" "unavailable" '{}'
 update_ha_sensor "sensor.timescaledb_backup_repo1_size" "0" '{"unit_of_measurement":"B"}'
 update_ha_sensor "sensor.timescaledb_backup_repo2_size" "0" '{"unit_of_measurement":"B"}'
 
@@ -50,7 +50,7 @@ update_ha_sensor "sensor.timescaledb_backup_repo2_size" "0" '{"unit_of_measureme
 # Delays: 0/60/120/300/600/900s  (D-03 / BKUP-07: 5-attempt with backoff).
 # Max total wait before failure: 0+60+120+300+600+900 = 1980s (~33 min).
 #
-# On success: updates sensor.timescaledb_last_backup_<repo_id> (ISO timestamp +
+# On success: updates sensor.timescaledb_backup_last_backup_<repo_id> (ISO timestamp +
 #   backup_type/duration attrs) and sensor.timescaledb_backup_<repo_id>_size (bytes).
 # On failure: calls notify_backup_failure and logs an error; the caller continues.
 #

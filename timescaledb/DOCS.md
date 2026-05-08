@@ -395,8 +395,8 @@ After each successful backup, four Home Assistant sensors are updated:
 
 | Entity | What it shows |
 |--------|---------------|
-| `sensor.timescaledb_last_backup_repo1` | Timestamp of last successful repo1 backup |
-| `sensor.timescaledb_last_backup_repo2` | Timestamp of last successful repo2 backup |
+| `sensor.timescaledb_backup_last_backup_repo1` | Timestamp of last successful repo1 backup |
+| `sensor.timescaledb_backup_last_backup_repo2` | Timestamp of last successful repo2 backup |
 | `sensor.timescaledb_backup_repo1_size` | repo1 backup catalog total size (bytes) |
 | `sensor.timescaledb_backup_repo2_size` | repo2 backup catalog total size (bytes) |
 
@@ -627,12 +627,12 @@ Four sensors are updated in Home Assistant after each backup completes:
 
 | Entity | State | Attributes |
 |--------|-------|------------|
-| `sensor.timescaledb_last_backup_repo1` | ISO timestamp of last successful repo1 backup | `backup_type`, `duration_seconds` |
-| `sensor.timescaledb_last_backup_repo2` | ISO timestamp of last successful repo2 backup | `backup_type`, `duration_seconds` |
+| `sensor.timescaledb_backup_last_backup_repo1` | ISO timestamp of last successful repo1 backup | `backup_type`, `duration_seconds` |
+| `sensor.timescaledb_backup_last_backup_repo2` | ISO timestamp of last successful repo2 backup | `backup_type`, `duration_seconds` |
 | `sensor.timescaledb_backup_repo1_size` | repo1 total backup catalog size (bytes) | `unit_of_measurement: "B"` |
 | `sensor.timescaledb_backup_repo2_size` | repo2 total backup catalog size (bytes) | `unit_of_measurement: "B"` |
 
-`sensor.timescaledb_last_backup_repo2` and `_repo2_size` are only updated on January 1 when the
+`sensor.timescaledb_backup_last_backup_repo2` and `_repo2_size` are only updated on January 1 when the
 annual backup runs. Both size sensors use raw bytes; Home Assistant and Grafana auto-scale the
 display.
 
@@ -657,7 +657,7 @@ configuration is needed beyond basic system setup — backups are database-level
 #### Step 2. Install the TimescaleDB app
 
 In **Settings > Apps > App Store**, click the three-dot menu, add the repository
-`https://github.com/flaksic/ha-timescaledb`, find "TimescaleDB" and click **Install**.
+`https://github.com/flaksit/ha-timescaledb`, find "TimescaleDB" and click **Install**.
 Do NOT start it yet — start it after secrets are staged in Step 4.
 
 #### Step 3. Locate the app's secrets directory
