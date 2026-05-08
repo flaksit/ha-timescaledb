@@ -98,11 +98,17 @@ classify_pgbackrest_error() {
 # Returns: byte count as string, or "" on failure
 repo_du() {
     local _rk="$1"
-    local _host="u404673-sub${_rk}.your-storagebox.de"
-    local _user="u404673-sub${_rk}"
     local _key="${SECRETS_DIR}/pgbackrest_id_ed25519_repo${_rk}"
 
     [ -f "${_key}" ] || { echo ""; return 0; }
+
+    # Read host and user from pgbackrest.conf — sub-account numbers don't match repo keys
+    # (e.g. repo1 → sub4, repo2 → sub5) so constructing from _rk would use wrong hosts.
+    local _host _user
+    _host=$(grep -m1 "^repo${_rk}-sftp-host=" /etc/pgbackrest/pgbackrest.conf 2>/dev/null | cut -d= -f2)
+    _user=$(grep -m1 "^repo${_rk}-sftp-host-user=" /etc/pgbackrest/pgbackrest.conf 2>/dev/null | cut -d= -f2)
+
+    [ -n "${_host}" ] || { echo ""; return 0; }
 
     # 2>&1 required: OpenSSH 10+ routes du output to stderr on Hetzner's restricted shell.
     # grep filters to the byte-count line, discarding post-quantum warnings and other noise.
