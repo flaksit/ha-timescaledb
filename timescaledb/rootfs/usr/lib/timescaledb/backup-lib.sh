@@ -93,16 +93,15 @@ update_ha_sensor() {
     local state="$2"
     local attr_json="${3:-{}}"
 
-    # Strip sensor. prefix to get the id used for topic routing and unique_id.
-    # Not set as a discovery payload field — HA default naming derives entity_id from
-    # device slug + name slug automatically (no explicit id override needed).
+    # Strip sensor. prefix to get the id used for topic routing, unique_id, and object_id.
     local _oid
     _oid="${entity_id#sensor.}"
 
-    # Determine device_class: timestamp sensors are last_backup_*, size sensors have none.
+    # Determine device_class. Match the full new entity_id prefix (timescaledb_backup_last_backup_*)
+    # not the old REST-era prefix (timescaledb_last_backup_*) which no longer applies.
     local _device_class
     case "${_oid}" in
-        timescaledb_last_backup_*) _device_class="timestamp" ;;
+        timescaledb_backup_last_backup_*) _device_class="timestamp" ;;
         *) _device_class="" ;;
     esac
 
@@ -111,22 +110,26 @@ update_ha_sensor() {
         return 0
     fi
 
-    # Human-readable name: underscores → spaces. HA uses this to derive the entity_id suffix
-    # (device slug + name slug). HA default naming is used — no explicit id override in payload.
+    # Human-readable name: underscores → spaces.
     local _name
     _name=$(printf '%s' "${_oid}" | tr '_' ' ')
 
-    # Build discovery config JSON. device_class is conditionally included only for timestamp
-    # sensors — omitting it for size sensors avoids HA validation errors.
+    # Build discovery config JSON. object_id is required: without it HA derives entity_id from
+    # "{device_name} {name}" which doubles the device slug when the name already contains it
+    # (e.g. sensor.timescaledb_backup_timescaledb_backup_last_backup_repo2). object_id pins the
+    # entity_id suffix to _oid regardless of device name or name field content.
+    # device_class is conditionally included only for timestamp sensors.
     local _config_json
     _config_json=$(jq -nc \
         --arg nm "${_name}" \
         --arg uid "${_oid}" \
+        --arg oid "${_oid}" \
         --arg st "homeassistant/sensor/timescaledb_backup/${_oid}/state" \
         --arg at "homeassistant/sensor/timescaledb_backup/${_oid}/attrs" \
         --arg dc "${_device_class}" \
         '{
           name: $nm,
+          object_id: $oid,
           unique_id: $uid,
           state_topic: $st,
           json_attributes_topic: $at,
