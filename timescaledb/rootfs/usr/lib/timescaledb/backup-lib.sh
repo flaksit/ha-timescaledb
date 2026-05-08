@@ -116,16 +116,20 @@ update_ha_sensor() {
 
     # Build discovery config JSON. object_id is required: without it HA derives entity_id from
     # "{device_name} {name}" which doubles the device slug when the name already contains it
-    # (e.g. sensor.timescaledb_backup_timescaledb_backup_last_backup_repo2). object_id pins the
-    # entity_id suffix to _oid regardless of device name or name field content.
+    # Topic uses _oid directly (no node_id segment). Including a node_id in the topic causes
+    # HA to prepend it to the payload object_id when deriving entity_id
+    # (entity_id = {domain}.{node_id}_{object_id}), doubling the prefix for sensors whose
+    # _oid already contains the device slug (e.g. timescaledb_backup_last_backup_repo2 →
+    # sensor.timescaledb_backup_timescaledb_backup_last_backup_repo2). Without node_id,
+    # HA uses object_id from the payload directly: sensor.{object_id}.
     # device_class is conditionally included only for timestamp sensors.
     local _config_json
     _config_json=$(jq -nc \
         --arg nm "${_name}" \
         --arg uid "${_oid}" \
         --arg oid "${_oid}" \
-        --arg st "homeassistant/sensor/timescaledb_backup/${_oid}/state" \
-        --arg at "homeassistant/sensor/timescaledb_backup/${_oid}/attrs" \
+        --arg st "homeassistant/sensor/${_oid}/state" \
+        --arg at "homeassistant/sensor/${_oid}/attrs" \
         --arg dc "${_device_class}" \
         '{
           name: $nm,
@@ -154,16 +158,16 @@ update_ha_sensor() {
 
     # Retained discovery config: broker stores this; HA recreates entity on restart.
     # Publish on every backup run — idempotent since unique_id is stable.
-    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/config" \
+    _mqtt_publish "homeassistant/sensor/${_oid}/config" \
         "${_config_json}" true
 
     # Retained state: broker replays on HA reconnect; entity shows last known value.
-    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/state" \
+    _mqtt_publish "homeassistant/sensor/${_oid}/state" \
         "${state}" true
 
     # Retained attributes: includes backup_type/duration_seconds or unit_of_measurement.
     # attr_json is passed from run as a JSON object string; publish the raw string as payload.
-    _mqtt_publish "homeassistant/sensor/timescaledb_backup/${_oid}/attrs" \
+    _mqtt_publish "homeassistant/sensor/${_oid}/attrs" \
         "${attr_json}" true
 
     bashio::log.info "update_ha_sensor: published MQTT discovery + state for '${entity_id}'"
