@@ -97,12 +97,17 @@ update_ha_sensor() {
     local _oid
     _oid="${entity_id#sensor.}"
 
-    # Determine device_class. Match the full new entity_id prefix (timescaledb_backup_last_backup_*)
-    # not the old REST-era prefix (timescaledb_last_backup_*) which no longer applies.
-    local _device_class
+    # Sensor metadata varies by type. Timestamp sensors get device_class=timestamp.
+    # Size sensors get device_class=data_size + unit_of_measurement=B + state_class=measurement
+    # so HA registers the unit and auto-scales display. Without these in the discovery config
+    # payload, HA ignores unit/class sent via the attributes topic.
+    local _device_class _unit _state_class
     case "${_oid}" in
-        timescaledb_backup_last_backup_*) _device_class="timestamp" ;;
-        *) _device_class="" ;;
+        timescaledb_backup_last_backup_*)
+            _device_class="timestamp" ; _unit="" ; _state_class="" ;;
+        timescaledb_backup_*_size)
+            _device_class="data_size" ; _unit="B" ; _state_class="measurement" ;;
+        *) _device_class="" ; _unit="" ; _state_class="" ;;
     esac
 
     if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
@@ -121,7 +126,8 @@ update_ha_sensor() {
     # entity_id: sensor.timescaledb_backup_last_backup_repo1.
     local _short_oid="${_oid#timescaledb_backup_}"
 
-    # device_class is conditionally included only for timestamp sensors.
+    # Build discovery config. device_class, unit_of_measurement, state_class are conditionally
+    # added — only fields present in the payload are registered by HA.
     local _config_json
     _config_json=$(jq -nc \
         --arg nm "${_name}" \
@@ -130,6 +136,8 @@ update_ha_sensor() {
         --arg st "homeassistant/sensor/${_oid}/state" \
         --arg at "homeassistant/sensor/${_oid}/attrs" \
         --arg dc "${_device_class}" \
+        --arg unit "${_unit}" \
+        --arg sc "${_state_class}" \
         '{
           name: $nm,
           object_id: $oid,
@@ -137,7 +145,10 @@ update_ha_sensor() {
           state_topic: $st,
           json_attributes_topic: $at,
           device: { identifiers: ["ha_timescaledb_backup"], name: "TimescaleDB Backup" }
-        } | if $dc != "" then . + {device_class: $dc} else . end')
+        }
+        | if $dc   != "" then . + {device_class: $dc}             else . end
+        | if $unit != "" then . + {unit_of_measurement: $unit}     else . end
+        | if $sc   != "" then . + {state_class: $sc}              else . end')
 
     # Helper: publish one MQTT message via the supervisor proxy. Uses || true (not if !)
     # so that retain=true is handled as a JSON boolean, not as a shell condition.
