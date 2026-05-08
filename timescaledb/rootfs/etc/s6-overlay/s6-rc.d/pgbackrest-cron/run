@@ -92,6 +92,7 @@ run_backup() {
             --stanza=timescaledb \
             "--repo=${repo_id##repo}" \
             --type="${backup_type}" \
+            backup \
             "${extra_args[@]}" \
             2>"${_stderr_file}" || _exit_code=$?
 
