@@ -32,9 +32,7 @@ bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loo
 
 # Pre-publish MQTT discovery config + last known state for all four backup sensors.
 # WHY: entities are absent from HA until a message arrives on their discovery topic.
-# Pre-publishing on startup ensures they appear immediately and show real values after
-# a container restart (not "unavailable"/"0" which would overwrite previously correct
-# retained state). pgbackrest info is cheap (local SFTP metadata read, no data transfer).
+# Pre-publishing on startup shows real values immediately after a container restart.
 bashio::log.info "pgbackrest-cron: pre-publishing MQTT discovery config for backup sensors"
 for _pre_repo in 1 2; do
     _pre_info=$(env \
@@ -47,29 +45,21 @@ for _pre_repo in 1 2; do
     _pre_stop=$(printf '%s' "${_pre_info}" | jq -r \
         ".[0].backup | map(select(.database.\"repo-key\" == ${_pre_repo})) | last | .timestamp.stop // empty" \
         2>/dev/null || true)
-    _pre_size=$(printf '%s' "${_pre_info}" | jq -r \
-        ".[0].backup | map(select(.database.\"repo-key\" == ${_pre_repo})) | last | .info.size // 0" \
-        2>/dev/null || echo "0")
 
     if [ -n "${_pre_stop:-}" ]; then
-        # Real last-backup timestamp: convert epoch → ISO 8601
-        _pre_ts=$(date -u -d "@${_pre_stop}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-            || python3 -c "from datetime import datetime,timezone; print(datetime.fromtimestamp(${_pre_stop},tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null \
-            || echo "")
+        _pre_ts=$(date -u -d "@${_pre_stop}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
     else
         _pre_ts=""
     fi
 
     if [ -n "${_pre_ts:-}" ]; then
-        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" \
-            "${_pre_ts}" '{}'
+        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" "${_pre_ts}" '{}'
     else
-        # No backup on record — 'unavailable' avoids ISO-8601 parse errors in HA
-        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" \
-            "unavailable" '{}'
+        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" "unavailable" '{}'
     fi
-    update_ha_sensor "sensor.timescaledb_backup_repo${_pre_repo}_size" \
-        "${_pre_size:-0}" '{}'
+
+    _pre_size=$(repo_du "${_pre_repo}")
+    update_ha_sensor "sensor.timescaledb_backup_repo${_pre_repo}_size" "${_pre_size:-0}" '{}'
 done
 
 # ---------------------------------------------------------------------------
@@ -156,43 +146,23 @@ run_backup() {
     if [ "${_backup_ok}" = "true" ]; then
         local _repo_key="${repo_id##repo}"
 
-        # Get repo size from pgbackrest info JSON.
-        # WHY .backup[] not .repo[]: pgBackRest info JSON nests size under backup entries
-        # (.backup[].info.size), not under repo status (.repo[]). The .repo[] array contains
-        # code/cipher status but NOT size data. Confirmed from Phase 8 live JSON output
-        # (08-06-SUMMARY.md): .backup[0].info.size = 2607498442 for repo1.
-        local _size_json
-        _size_json=$(env \
-            "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
-            "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
-            gosu postgres /usr/bin/pgbackrest \
-            --stanza=timescaledb \
-            "--repo=${_repo_key}" \
-            info --output=json 2>/dev/null || echo '[]')
-
-        # CORRECT path: .[0].backup[] filtered by repo-key integer, take last (most recent), .info.size
-        # 'last' because pgBackRest lists backups chronologically, most recent last.
-        local _size
-        _size=$(printf '%s' "${_size_json}" | jq -r \
-            ".[0].backup | map(select(.database.\"repo-key\" == ${_repo_key})) | last | .info.size // 0" \
-            2>/dev/null || echo "0")
-
         local _ts
         _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        # Actual on-disk usage via SSH du (true folder total across all retained backups + WAL).
+        # Falls back to 0 if SSH unavailable (openssh-client not installed or port 23 not enabled).
+        local _size
+        _size=$(repo_du "${_repo_key}")
+        _size="${_size:-0}"
 
         local _attr_json
         _attr_json=$(jq -nc --arg t "${backup_type}" --argjson d "${_duration}" \
             '{"backup_type":$t,"duration_seconds":$d}')
 
-        # Entity ID uses HA MQTT discovery default naming (device slug + name slug, no object_id).
-        # Full entity_id: sensor.timescaledb_backup_last_backup_repo1 / _repo2.
         update_ha_sensor "sensor.timescaledb_backup_last_backup_${repo_id}" "${_ts}" "${_attr_json}"
+        update_ha_sensor "sensor.timescaledb_backup_${repo_id}_size" "${_size}" '{}'
 
-        local _size_attr
-        _size_attr=$(jq -nc '{"unit_of_measurement":"B"}')
-        update_ha_sensor "sensor.timescaledb_backup_${repo_id}_size" "${_size:-0}" "${_size_attr}"
-
-        bashio::log.info "pgbackrest-cron: ${repo_id} ${backup_type} backup complete (${_duration}s, ${_size:-?} bytes)"
+        bashio::log.info "pgbackrest-cron: ${repo_id} ${backup_type} backup complete (${_duration}s, ${_size} bytes on repo)"
     else
         local _stderr_tail
         _stderr_tail=$(tail -c 1024 "${_stderr_file}" 2>/dev/null || true)

@@ -82,6 +82,37 @@ classify_pgbackrest_error() {
 # after restart and recover to their last value without waiting for the next backup.
 #
 # Publishes three retained messages: discovery config (entity registration), state, attributes.
+# Get actual on-disk storage used by a pgBackRest repo on the Hetzner storage box.
+# Uses SSH port 23 (shell access) + `du -sb .` in the chroot home directory.
+# Falls back to empty string on failure (caller decides what to publish instead).
+#
+# WHY SSH not pgbackrest info: pgbackrest .info.size = uncompressed logical DB size,
+# .info.repository.size = single backup's compressed footprint. Neither gives the true
+# total folder size across all retained backups + WAL archives. `du -sb .` on the
+# storage box is the only accurate source.
+# WHY port 23 not 22: port 22 is SFTP only; port 23 provides shell access with du.
+# WHY du -sb .: storage box chroots the user to their home dir — '/' is inaccessible,
+# '.' is the backup root which contains the full pgbackrest stanza.
+#
+# Usage: repo_du <repo_key_int>   (1 or 2)
+# Returns: byte count as string, or "" on failure
+repo_du() {
+    local _rk="$1"
+    local _host="u404673-sub${_rk}.your-storagebox.de"
+    local _user="u404673-sub${_rk}"
+    local _key="${SECRETS_DIR}/pgbackrest_id_ed25519_repo${_rk}"
+
+    [ -f "${_key}" ] || { echo ""; return 0; }
+
+    ssh -i "${_key}" \
+        -o BatchMode=yes \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=10 \
+        -p 23 \
+        "${_user}@${_host}" \
+        'du -sb .' 2>/dev/null | awk '{print $1}' || echo ""
+}
+
 # Discovery config is idempotent — republishing with the same unique_id is safe.
 #
 # Usage: update_ha_sensor <entity_id> <state> [attr_json]
