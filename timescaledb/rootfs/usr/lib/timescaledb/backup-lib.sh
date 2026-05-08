@@ -104,13 +104,15 @@ repo_du() {
 
     [ -f "${_key}" ] || { echo ""; return 0; }
 
+    # 2>&1 required: OpenSSH 10+ routes du output to stderr on Hetzner's restricted shell.
+    # grep filters to the byte-count line, discarding post-quantum warnings and other noise.
     ssh -i "${_key}" \
         -o BatchMode=yes \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -p 23 \
         "${_user}@${_host}" \
-        'du -sb .' 2>/dev/null | awk '{print $1}' || echo ""
+        'du -sb .' 2>&1 | grep -E '^[0-9]' | awk '{print $1}' || echo ""
 }
 
 # Discovery config is idempotent — republishing with the same unique_id is safe.
