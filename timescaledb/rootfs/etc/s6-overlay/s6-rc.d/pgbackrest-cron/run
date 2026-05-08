@@ -30,17 +30,47 @@ if ! bashio::config.true 'backup_enabled'; then
 fi
 bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loop"
 
-# Pre-publish MQTT discovery config for all four backup sensors so entities appear in HA
-# immediately on container start, not only after the first 02:00 UTC backup completes.
-# WHY pre-publish: without this, sensors are absent from HA until the first backup runs
-# after deployment. Pre-publishing makes them visible as 'unavailable' from day one.
-# update_ha_sensor handles the MQTT publish; calling it with empty/zero state here only
-# registers the discovery config (state published on each backup run as normal).
+# Pre-publish MQTT discovery config + last known state for all four backup sensors.
+# WHY: entities are absent from HA until a message arrives on their discovery topic.
+# Pre-publishing on startup ensures they appear immediately and show real values after
+# a container restart (not "unavailable"/"0" which would overwrite previously correct
+# retained state). pgbackrest info is cheap (local SFTP metadata read, no data transfer).
 bashio::log.info "pgbackrest-cron: pre-publishing MQTT discovery config for backup sensors"
-update_ha_sensor "sensor.timescaledb_backup_last_backup_repo1" "unavailable" '{}'
-update_ha_sensor "sensor.timescaledb_backup_last_backup_repo2" "unavailable" '{}'
-update_ha_sensor "sensor.timescaledb_backup_repo1_size" "0" '{"unit_of_measurement":"B"}'
-update_ha_sensor "sensor.timescaledb_backup_repo2_size" "0" '{"unit_of_measurement":"B"}'
+for _pre_repo in 1 2; do
+    _pre_info=$(env \
+        "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
+        "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
+        gosu postgres /usr/bin/pgbackrest \
+        --stanza=timescaledb "--repo=${_pre_repo}" \
+        info --output=json 2>/dev/null || echo '[]')
+
+    _pre_stop=$(printf '%s' "${_pre_info}" | jq -r \
+        ".[0].backup | map(select(.database.\"repo-key\" == ${_pre_repo})) | last | .timestamp.stop // empty" \
+        2>/dev/null || true)
+    _pre_size=$(printf '%s' "${_pre_info}" | jq -r \
+        ".[0].backup | map(select(.database.\"repo-key\" == ${_pre_repo})) | last | .info.size // 0" \
+        2>/dev/null || echo "0")
+
+    if [ -n "${_pre_stop:-}" ]; then
+        # Real last-backup timestamp: convert epoch → ISO 8601
+        _pre_ts=$(date -u -d "@${_pre_stop}" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+            || python3 -c "from datetime import datetime,timezone; print(datetime.fromtimestamp(${_pre_stop},tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null \
+            || echo "")
+    else
+        _pre_ts=""
+    fi
+
+    if [ -n "${_pre_ts:-}" ]; then
+        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" \
+            "${_pre_ts}" '{}'
+    else
+        # No backup on record — 'unavailable' avoids ISO-8601 parse errors in HA
+        update_ha_sensor "sensor.timescaledb_backup_last_backup_repo${_pre_repo}" \
+            "unavailable" '{}'
+    fi
+    update_ha_sensor "sensor.timescaledb_backup_repo${_pre_repo}_size" \
+        "${_pre_size:-0}" '{}'
+done
 
 # ---------------------------------------------------------------------------
 # run_backup <repo_id> <backup_type> [extra_pgbackrest_args...]
