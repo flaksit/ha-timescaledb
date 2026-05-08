@@ -110,24 +110,23 @@ update_ha_sensor() {
         return 0
     fi
 
-    # Human-readable name: underscores → spaces.
+    # Human-readable name: underscores → spaces, strip device prefix for UI display.
     local _name
-    _name=$(printf '%s' "${_oid}" | tr '_' ' ')
+    _name=$(printf '%s' "${_oid#timescaledb_backup_}" | tr '_' ' ')
 
-    # Build discovery config JSON. object_id is required: without it HA derives entity_id from
-    # "{device_name} {name}" which doubles the device slug when the name already contains it
-    # Topic uses _oid directly (no node_id segment). Including a node_id in the topic causes
-    # HA to prepend it to the payload object_id when deriving entity_id
-    # (entity_id = {domain}.{node_id}_{object_id}), doubling the prefix for sensors whose
-    # _oid already contains the device slug (e.g. timescaledb_backup_last_backup_repo2 →
-    # sensor.timescaledb_backup_timescaledb_backup_last_backup_repo2). Without node_id,
-    # HA uses object_id from the payload directly: sensor.{object_id}.
+    # HA entity_id = {device_slug}_{object_id} when a device is specified in the payload.
+    # device "TimescaleDB Backup" → slug "timescaledb_backup". Using the full _oid as
+    # object_id doubles the slug: sensor.timescaledb_backup_timescaledb_backup_last_backup_repo1.
+    # Short object_id = _oid with the device slug prefix stripped → HA produces the correct
+    # entity_id: sensor.timescaledb_backup_last_backup_repo1.
+    local _short_oid="${_oid#timescaledb_backup_}"
+
     # device_class is conditionally included only for timestamp sensors.
     local _config_json
     _config_json=$(jq -nc \
         --arg nm "${_name}" \
         --arg uid "${_oid}" \
-        --arg oid "${_oid}" \
+        --arg oid "${_short_oid}" \
         --arg st "homeassistant/sensor/${_oid}/state" \
         --arg at "homeassistant/sensor/${_oid}/attrs" \
         --arg dc "${_device_class}" \
