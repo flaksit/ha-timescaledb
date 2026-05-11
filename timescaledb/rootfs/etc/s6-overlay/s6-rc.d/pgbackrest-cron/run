@@ -30,6 +30,14 @@ if ! bashio::config.true 'backup_enabled'; then
 fi
 bashio::log.info "pgbackrest-cron: backup_enabled=true — entering schedule loop"
 
+# Warn when no MQTT broker is configured. The sensors publish through the Supervisor
+# mqtt/publish service proxy and silently no-op when MQTT is absent, so without this
+# check users see no error — only missing entities. config.yaml declares 'mqtt:want'
+# (soft dep) so bashio::services exposes availability without blocking startup.
+if ! bashio::services.available "mqtt"; then
+    bashio::log.warning "pgbackrest-cron: no MQTT service available — backup status sensors will not appear in Home Assistant. Install the Mosquitto broker app and enable the MQTT integration to publish sensors (backups themselves are unaffected)."
+fi
+
 # Pre-publish MQTT discovery config + last known state for all four backup sensors.
 # WHY: entities are absent from HA until a message arrives on their discovery topic.
 # Pre-publishing on startup shows real values immediately after a container restart.

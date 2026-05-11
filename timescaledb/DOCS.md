@@ -159,6 +159,13 @@ PostgreSQL data is stored in the app's persistent `/data/postgres` directory. Th
 
 The app integrates [pgBackRest](https://pgbackrest.org/) to ship encrypted, deduplicated, point-in-time-recoverable backups to two independent off-host SFTP destinations.
 
+### Prerequisites
+
+- **Two SFTP destinations** with separate credentials. The recommended setup is two Hetzner Storage Box sub-accounts — see [BKUP-13 below](#backup-setup-bkup-13). Any SFTP server that allows writing to the chroot root (`/`) works.
+- **MQTT broker + integration** (optional but recommended). Backup status sensors (`sensor.timescaledb_backup_*`) are published via MQTT discovery through the Supervisor's `mqtt/publish` service. Without MQTT the backups still run, but the four status sensors will not appear in Home Assistant. To enable:
+    1. Install the **Mosquitto broker** app from the official add-on store.
+    2. Configure the **MQTT integration** in Home Assistant (Settings → Devices & Services → Add Integration → MQTT). Mosquitto's discovery flow handles this automatically on most installs.
+
 ### Design
 
 Two separate Hetzner Storage Box **sub-accounts** are used, one per repository:

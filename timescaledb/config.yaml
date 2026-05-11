@@ -1,5 +1,5 @@
 name: TimescaleDB
-version: "1.1.0-phase9.10"
+version: "1.1.0-phase9.11"
 slug: timescaledb
 description: PostgreSQL 18 + TimescaleDB 2.26 time-series database for Home Assistant
 url: https://github.com/flaksit/ha-timescaledb
@@ -8,6 +8,13 @@ arch:
 startup: system
 init: false
 homeassistant_api: true
+# Soft dependency on MQTT broker. Backup status sensors are published via MQTT
+# discovery through the Supervisor's mqtt/publish service proxy. Without an MQTT
+# broker + integration the app still starts and backups still run — the sensors
+# are simply absent (publish call silently no-ops). 'want' surfaces availability
+# via bashio so the startup script can warn when backup_enabled=true.
+services:
+  - mqtt:want
 ports:
   5432/tcp: null
 ports_description:
