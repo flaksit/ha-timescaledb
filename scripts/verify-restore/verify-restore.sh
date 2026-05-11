@@ -363,11 +363,22 @@ _backup_stop=$(printf '%s' "${_info_json}" | jq -r \
 # Run pgbackrest restore into the stopped PGDATA
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Restoring repo${REPO} backup to /restore/pgdata ..."
+#
+# WHY --type=immediate: a default-mode restore writes a backup_label that asks
+# PostgreSQL to replay WAL forward to the latest archived segment. For repo2
+# (annual fulls, no WAL archive) there is no WAL beyond the backup, so PG
+# falls back to the embedded archive_command -> 'pgbackrest archive-get',
+# which then errors with 'archive-get command requires option:
+# repo1-cipher-pass' (the env var is not set in the postgres process). Even
+# for repo1 the verify cluster doesn't need PITR — we only care that the
+# physical backup deserialises to a consistent on-disk state and the row
+# counts match. Stopping recovery at backup-end (--type=immediate) is the
+# correct semantic for a verify drill on either repo.
 docker exec \
   "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
   pgbackrest --stanza=timescaledb "--repo=${REPO}" \
-    restore --pg1-path=/restore/pgdata --delta
+    restore --pg1-path=/restore/pgdata --delta --type=immediate
 
 # ────────────────────────────────────────────────────────────────────────────
 # Start PostgreSQL explicitly after restore completes
