@@ -336,9 +336,9 @@ docker exec "${CONTAINER_NAME}" bash -c \
 # ────────────────────────────────────────────────────────────────────────────
 # Fetch backup info BEFORE restore to get the backup stop timestamp
 #
-# Primary freshness check (review finding): max(time) in the states table is NOT
-# the same as backup freshness. If no HA state changed recently, a valid and current
-# backup would fail a max(time) freshness check. The pgBackRest backup stop timestamp
+# Primary freshness check (review finding): max(last_updated) in the states table
+# is NOT the same as backup freshness. If no HA state changed recently, a valid and
+# current backup would fail a max(last_updated) check. The pgBackRest backup stop timestamp
 # (.backup[].timestamp.stop in the info JSON) is the authoritative signal.
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Fetching backup info for repo${REPO} ..."
@@ -411,45 +411,68 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Verify step 2 — Secondary data sanity: max(time) from restored DB
+# Verify step 2 — Secondary data sanity: max(last_updated) from restored DB
 #
-# WHY secondary: max(time) can appear stale if no HA entity changed state recently,
-# even with a fresh and valid backup. Logged for visibility; not a failure gate alone.
+# WHY 'last_updated' and not 'time': Home Assistant's recorder schema names the
+# event-time column 'last_updated' on the states hypertable; 'time' is also a
+# PostgreSQL reserved word, so a bare unquoted 'time' would fail to parse even
+# if the column existed. The TimescaleDB hypertable is partitioned by
+# last_updated (see ha_states_last_updated_idx).
+#
+# WHY secondary: max(last_updated) can appear stale if no HA entity changed
+# state recently, even with a fresh and valid backup. Logged for visibility;
+# not a failure gate alone.
 # ────────────────────────────────────────────────────────────────────────────
 _restored_max=$(docker exec "${CONTAINER_NAME}" bash -c \
   "gosu postgres psql -h /tmp -p 5433 -U postgres -d homeassistant -tAc \
-  'SELECT max(time) FROM states'" 2>/dev/null \
+  'SELECT max(last_updated) FROM states'" 2>/dev/null \
   || echo "NULL")
-echo "Restored DB max(time): ${_restored_max}"
+echo "Restored DB max(last_updated): ${_restored_max}"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Verify step 3 — Exact row count match (requires live Pi via ssh)
 # Skipped in offline mode (when live container is unavailable).
+#
+# WHY explicit empty-result fail: $(docker exec ... psql ...) captures stdout
+# only. When psql errors, stderr is shown to the operator but the variable
+# silently receives "". An earlier version of this block then compared "" == ""
+# and reported a false PASS. The non-empty guards below abort with FAIL if
+# either side's query returned no rows.
 # ────────────────────────────────────────────────────────────────────────────
 if [[ -n "${CONTAINER}" ]]; then
   echo "==> Comparing row counts between restored and live DB ..."
   _restored_counts=$(docker exec "${CONTAINER_NAME}" bash -c \
     "gosu postgres psql -h /tmp -p 5433 -U postgres -d homeassistant -tAc \
-    'SELECT count(*) || chr(9) || max(time) || chr(9) || min(time) FROM states'")
+    'SELECT count(*) || chr(9) || max(last_updated) || chr(9) || min(last_updated) FROM states'")
   _cnt_r=$(printf '%s' "$_restored_counts" | cut -f1)
   _max_r=$(printf '%s' "$_restored_counts" | cut -f2)
   _min_r=$(printf '%s' "$_restored_counts" | cut -f3)
 
-  # Query live DB with time <= restored max to get a comparable slice
-  _live_counts=$(ssh "$HA_SSH" "docker exec ${CONTAINER} psql -h /tmp -U postgres \
-    -d homeassistant -tAc \
-    \"SELECT count(*) || chr(9) || max(time) || chr(9) || min(time) FROM states WHERE time <= '${_max_r}'\"")
-  _cnt_l=$(printf '%s' "$_live_counts" | cut -f1)
-  _max_l=$(printf '%s' "$_live_counts" | cut -f2)
-  _min_l=$(printf '%s' "$_live_counts" | cut -f3)
-
-  if [[ "$_cnt_r" == "$_cnt_l" && "$_max_r" == "$_max_l" && "$_min_r" == "$_min_l" ]]; then
-    echo "PASS: row count exact match (restored=${_cnt_r} rows, live=${_cnt_l} rows)"
-  else
-    echo "FAIL: row count mismatch"
-    echo "  Restored: count=${_cnt_r}, max=${_max_r}, min=${_min_r}"
-    echo "  Live:     count=${_cnt_l}, max=${_max_l}, min=${_min_l}"
+  if [[ -z "$_cnt_r" || -z "$_max_r" || -z "$_min_r" ]]; then
+    echo "FAIL: restored DB row count query returned empty result"
+    echo "  Raw response: '${_restored_counts}'"
     _rowcount_ok=false
+  else
+    # Query live DB with last_updated <= restored max to get a comparable slice.
+    _live_counts=$(ssh "$HA_SSH" "docker exec ${CONTAINER} psql -h /tmp -U postgres \
+      -d homeassistant -tAc \
+      \"SELECT count(*) || chr(9) || max(last_updated) || chr(9) || min(last_updated) FROM states WHERE last_updated <= '${_max_r}'\"")
+    _cnt_l=$(printf '%s' "$_live_counts" | cut -f1)
+    _max_l=$(printf '%s' "$_live_counts" | cut -f2)
+    _min_l=$(printf '%s' "$_live_counts" | cut -f3)
+
+    if [[ -z "$_cnt_l" || -z "$_max_l" || -z "$_min_l" ]]; then
+      echo "FAIL: live DB row count query returned empty result"
+      echo "  Raw response: '${_live_counts}'"
+      _rowcount_ok=false
+    elif [[ "$_cnt_r" == "$_cnt_l" && "$_max_r" == "$_max_l" && "$_min_r" == "$_min_l" ]]; then
+      echo "PASS: row count exact match (restored=${_cnt_r} rows, live=${_cnt_l} rows)"
+    else
+      echo "FAIL: row count mismatch"
+      echo "  Restored: count=${_cnt_r}, max=${_max_r}, min=${_min_r}"
+      echo "  Live:     count=${_cnt_l}, max=${_max_l}, min=${_min_l}"
+      _rowcount_ok=false
+    fi
   fi
 else
   echo "INFO: live container unavailable (offline mode) — skipping exact row count match"
