@@ -16,7 +16,6 @@ SECRETS_DIR_FLAG=""               # --secrets-dir: local directory with pre-copi
 PASS_PREFIX=""                    # --pass-path: pass store path prefix (priority 2)
 PGBACKREST_CONF_PATH=""           # --pgbackrest-conf: local pgbackrest.conf to use (offline fallback)
 DOCKER_IMAGE="timescale/timescaledb:latest-pg18"
-RESTORE_DIR="$(mktemp -d)"
 CONTAINER_NAME="pgbackrest-verify-$$"   # unique name per run; cleaned up on EXIT
 KEEP=0                            # --keep: skip container teardown + leave PG running for inspection
 
@@ -80,7 +79,7 @@ fi
 # but the container is only force-removed when KEEP=0 or the run failed.
 # ────────────────────────────────────────────────────────────────────────────
 TMPDIR_SECRETS=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_SECRETS" "$RESTORE_DIR"; docker rm -f "$CONTAINER_NAME" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMPDIR_SECRETS"; docker rm -fv "$CONTAINER_NAME" 2>/dev/null || true' EXIT
 
 # ────────────────────────────────────────────────────────────────────────────
 # Resolve live container name (skip if offline mode is active)
@@ -232,13 +231,35 @@ docker pull "${DOCKER_IMAGE}"
 # we can restore into the empty PGDATA first, then start PG explicitly.
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Starting verify container '${CONTAINER_NAME}' ..."
+#
+# WHY anonymous Docker volume for /restore/pgdata (no -v <host>:<container>):
+# Host bind-mounts of $TMPDIR paths fail silently on rootless Docker, Docker
+# Desktop, and snap-packaged Docker setups — the daemon cannot see paths under
+# the calling user's private /tmp namespace, so the in-container directory is
+# empty even though the host directory contains the expected files. An
+# anonymous volume is managed entirely by the Docker daemon and is reliable
+# across all setups; `docker rm -fv` (set in the EXIT trap above) tears it
+# down with the container.
+#
+# WHY no -v for /secrets: same reason. Secrets are injected with `docker cp`
+# after the container is up (see next block).
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --entrypoint /bin/sleep \
-  -v "${RESTORE_DIR}:/restore/pgdata" \
-  -v "${TMPDIR_SECRETS}:/secrets:ro" \
+  -v "/restore/pgdata" \
   "${DOCKER_IMAGE}" \
   infinity
+
+# Inject secrets into the container with `docker cp` rather than a bind mount.
+# /secrets is created inside the container's writable layer (anonymous volume
+# not needed — the path is gone when the container is removed). The id_ed25519
+# key file is chmod 0600 to satisfy SSH client strictness.
+echo "==> Installing secrets in verify container ..."
+docker exec "${CONTAINER_NAME}" mkdir -p /secrets
+docker cp "${TMPDIR_SECRETS}/id_ed25519"  "${CONTAINER_NAME}:/secrets/id_ed25519"
+docker cp "${TMPDIR_SECRETS}/known_hosts" "${CONTAINER_NAME}:/secrets/known_hosts"
+docker exec "${CONTAINER_NAME}" chmod 0600 /secrets/id_ed25519
+docker exec "${CONTAINER_NAME}" chmod 0644 /secrets/known_hosts
 
 # ────────────────────────────────────────────────────────────────────────────
 # Install pgBackRest inside the verify container
@@ -461,7 +482,7 @@ fi
 # and the trap fires the full teardown. Secrets temp dirs are still removed.
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "${KEEP}" -eq 1 ]]; then
-  rm -rf "$TMPDIR_SECRETS" "$RESTORE_DIR"
+  rm -rf "$TMPDIR_SECRETS"
   trap - EXIT
   cat <<EOF
 
@@ -478,8 +499,8 @@ Inspect with psql:
 Run a one-shot query:
   docker exec ${CONTAINER_NAME} gosu postgres psql -h /tmp -p 5433 -d homeassistant -c 'SELECT count(*) FROM states;'
 
-Stop and remove when done:
-  docker rm -f ${CONTAINER_NAME}
+Stop and remove when done (the -v flag also reclaims the anonymous /restore/pgdata volume):
+  docker rm -fv ${CONTAINER_NAME}
 ──────────────────────────────────────────────────────────────────────
 EOF
 fi
