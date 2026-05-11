@@ -18,6 +18,7 @@ PGBACKREST_CONF_PATH=""           # --pgbackrest-conf: local pgbackrest.conf to 
 DOCKER_IMAGE="timescale/timescaledb:latest-pg18"
 RESTORE_DIR="$(mktemp -d)"
 CONTAINER_NAME="pgbackrest-verify-$$"   # unique name per run; cleaned up on EXIT
+KEEP=0                            # --keep: skip container teardown + leave PG running for inspection
 
 # ────────────────────────────────────────────────────────────────────────────
 # Usage
@@ -37,6 +38,9 @@ Options:
   --pass-path <prefix>     pass store path prefix for offline secret retrieval (priority 2)
   --pgbackrest-conf <path> Local pgbackrest.conf to use instead of fetching from the live container.
                            Required when the live Pi/container is unavailable (offline DR scenario).
+  --keep                   After a successful verify, leave the verify container + PostgreSQL
+                           running so the restored database can be inspected interactively.
+                           Prints connection and cleanup commands. Default: tear everything down.
   -h, --help               Show this message and exit
 EOF
 }
@@ -52,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --secrets-dir)        SECRETS_DIR_FLAG="$2"; shift 2 ;;
     --pass-path)          PASS_PREFIX="$2"; shift 2 ;;
     --pgbackrest-conf)    PGBACKREST_CONF_PATH="$2"; shift 2 ;;
+    --keep)               KEEP=1; shift ;;
     -h|--help)            usage; exit 0 ;;
     *)                    echo "Unknown flag: $1"; usage; exit 1 ;;
   esac
@@ -64,7 +69,15 @@ if [[ "$REPO" != "1" && "$REPO" != "2" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Cleanup trap — always remove the verify container and temp dirs on exit
+# Cleanup trap — remove the verify container and temp dirs on exit
+#
+# WHY two cleanup tiers: with --keep, a successful verify must leave the
+# container alive for inspection. The trap registered here is the "full" teardown
+# used on early failures (e.g. before the container even exists) and for default
+# (non-keep) runs. When --keep is in effect AND the verify succeeds, the trap is
+# disarmed at the end of the script (see the final block) so the container and
+# its PG remain reachable. Temp dirs are always removed (secrets must not leak),
+# but the container is only force-removed when KEEP=0 or the run failed.
 # ────────────────────────────────────────────────────────────────────────────
 TMPDIR_SECRETS=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_SECRETS" "$RESTORE_DIR"; docker rm -f "$CONTAINER_NAME" 2>/dev/null || true' EXIT
@@ -345,9 +358,14 @@ fi
 
 # ────────────────────────────────────────────────────────────────────────────
 # Shutdown the restore PG and report summary
+#
+# With --keep, leave PostgreSQL running so the operator can connect to the
+# restored database via `docker exec ... psql`. The trap is disarmed below.
 # ────────────────────────────────────────────────────────────────────────────
-docker exec "${CONTAINER_NAME}" bash -c \
-  "gosu postgres pg_ctl stop -D /restore/pgdata -m fast" 2>/dev/null || true
+if [[ "${KEEP}" -eq 0 ]]; then
+  docker exec "${CONTAINER_NAME}" bash -c \
+    "gosu postgres pg_ctl stop -D /restore/pgdata -m fast" 2>/dev/null || true
+fi
 
 echo ""
 echo "==> Verify complete"
@@ -356,4 +374,34 @@ if [[ "${_freshness_ok}" == "false" || "${_rowcount_ok}" == "false" ]]; then
   exit 1
 else
   echo "RESULT: PASSED"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# --keep post-success: disarm trap, leave container + PG running, print hints
+#
+# Only reached on a successful run because the FAIL branch above calls exit 1
+# and the trap fires the full teardown. Secrets temp dirs are still removed.
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "${KEEP}" -eq 1 ]]; then
+  rm -rf "$TMPDIR_SECRETS" "$RESTORE_DIR"
+  trap - EXIT
+  cat <<EOF
+
+──────────────────────────────────────────────────────────────────────
+--keep enabled: verify container left running for inspection.
+
+Container : ${CONTAINER_NAME}
+Database  : homeassistant
+Inside    : socket -h /tmp, port 5433, user postgres (no password)
+
+Inspect with psql:
+  docker exec -it ${CONTAINER_NAME} gosu postgres psql -h /tmp -p 5433 -d homeassistant
+
+Run a one-shot query:
+  docker exec ${CONTAINER_NAME} gosu postgres psql -h /tmp -p 5433 -d homeassistant -c 'SELECT count(*) FROM states;'
+
+Stop and remove when done:
+  docker rm -f ${CONTAINER_NAME}
+──────────────────────────────────────────────────────────────────────
+EOF
 fi

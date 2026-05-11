@@ -37,6 +37,7 @@ the live TimescaleDB instance for row count comparison. Run from the repo root o
 | `--secrets-dir <path>` | none | Path to a local directory containing pre-copied secret files (last resort, priority 3). |
 | `--pass-path <prefix>` | none | Pass store path prefix for offline secret retrieval (priority 2). e.g. `home-assistant/backups`. |
 | `--pgbackrest-conf <path>` | none | Path to a local `pgbackrest.conf` file. Use this when the live Pi or container is unavailable (offline DR scenario). Skips the `docker exec … cat /etc/pgbackrest/pgbackrest.conf` step. Obtain a reference copy from `timescaledb/DOCS.md` or a prior container snapshot. |
+| `--keep` | off | After a successful verify, leave the verify container and PostgreSQL running so the restored database can be inspected interactively. The script prints the exact `docker exec … psql` connection command and the `docker rm -f` cleanup command when it exits. On failure the container is still removed. |
 
 ## Credential acquisition
 
@@ -116,8 +117,11 @@ compare against. The primary backup freshness check still runs.
 
 ## Cleanup
 
-The `EXIT` trap always removes the temporary Docker container (`pgbackrest-verify-<PID>`)
-and the secrets temp directory, even when the script fails or is interrupted with Ctrl-C.
+The `EXIT` trap removes the temporary Docker container (`pgbackrest-verify-<PID>`) and the
+secrets temp directory on every exit path — failures, interrupts, and default successful
+runs alike. The one exception is `--keep` on a successful run: the trap is disarmed so the
+container and its PostgreSQL stay reachable, and the script prints the `docker rm -f` line
+the operator should run when finished inspecting.
 
 The restore container is started with a `sleep infinity` entrypoint so PostgreSQL does not
 run until the pgBackRest restore completes. This is by design: PostgreSQL cannot be running
