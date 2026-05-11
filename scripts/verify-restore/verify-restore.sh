@@ -507,6 +507,36 @@ fi
 if [[ "${KEEP}" -eq 1 ]]; then
   rm -rf "$TMPDIR_SECRETS"
   trap - EXIT
+
+  # Open the restored PG to TCP from outside the container so GUI clients
+  # (DBeaver, DataGrip, psql on the host) can connect. The verify cluster is a
+  # throwaway, so trust-auth from any source is acceptable — it never touches
+  # the live HA database. Failures here are warnings, not fatal: the operator
+  # can still use `docker exec ... psql` via the local socket.
+  _tcp_ok=true
+  if ! docker exec "${CONTAINER_NAME}" gosu postgres psql -h /tmp -p 5433 -d postgres -c \
+       "ALTER SYSTEM SET listen_addresses='*';" >/dev/null 2>&1; then
+    _tcp_ok=false
+  fi
+  if ! docker exec "${CONTAINER_NAME}" sh -c \
+       "grep -q '^host all all 0.0.0.0/0 trust' /restore/pgdata/pg_hba.conf \
+        || echo 'host all all 0.0.0.0/0 trust' >> /restore/pgdata/pg_hba.conf"; then
+    _tcp_ok=false
+  fi
+  # Reload to pick up pg_hba.conf change (listen_addresses needs full restart
+  # via pg_ctl, not just reload).
+  docker exec "${CONTAINER_NAME}" gosu postgres psql -h /tmp -p 5433 -d postgres -c \
+    "SELECT pg_reload_conf();" >/dev/null 2>&1 || true
+  docker exec "${CONTAINER_NAME}" bash -c \
+    "gosu postgres pg_ctl restart -D /restore/pgdata -o '-k /tmp --port=5433' -w -t 60" \
+    >/dev/null 2>&1 || _tcp_ok=false
+
+  # Resolve container IP on the default bridge so the host can reach 5433
+  # directly. Falls back to '<container-ip>' placeholder if inspection fails.
+  CTR_IP=$(docker inspect "${CONTAINER_NAME}" \
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null \
+    || echo "<container-ip>")
+
   cat <<EOF
 
 ──────────────────────────────────────────────────────────────────────
@@ -514,16 +544,41 @@ if [[ "${KEEP}" -eq 1 ]]; then
 
 Container : ${CONTAINER_NAME}
 Database  : homeassistant
-Inside    : socket -h /tmp, port 5433, user postgres (no password)
+User      : postgres (no password — throwaway cluster, trust auth)
 
-Inspect with psql:
+Inspect with docker-exec psql (no networking required):
   docker exec -it ${CONTAINER_NAME} gosu postgres psql -h /tmp -p 5433 -d homeassistant
 
 Run a one-shot query:
   docker exec ${CONTAINER_NAME} gosu postgres psql -h /tmp -p 5433 -d homeassistant -c 'SELECT count(*) FROM states;'
 
-Stop and remove when done (the -v flag also reclaims the anonymous /restore/pgdata volume):
-  docker rm -fv ${CONTAINER_NAME}
+Connect a GUI client (DBeaver, DataGrip, psql) from the same host as
+docker (Linux: works out of the box; Docker Desktop on macOS/Windows:
+see note below):
+  Host     : ${CTR_IP}
+  Port     : 5433
+  Database : homeassistant
+  User     : postgres
+  Password : (leave empty)
+
+Or run psql from the host:
+  psql -h ${CTR_IP} -p 5433 -U postgres -d homeassistant
+
+Docker Desktop note: the container IP above is on a Docker-internal
+bridge that the host kernel cannot route to directly. Either run a
+short-lived publisher sidecar:
+  docker run -d --rm --name pg-pub --network container:${CONTAINER_NAME} \\
+    -p 15433:5433 alpine/socat \\
+    tcp-listen:5433,fork,reuseaddr tcp:127.0.0.1:5433
+then point your client at localhost:15433; or skip the GUI and use
+docker exec.
+
+Stop and remove when done (the -v flag also reclaims the anonymous
+/restore/pgdata volume):
+  docker container rm -fv ${CONTAINER_NAME}
 ──────────────────────────────────────────────────────────────────────
 EOF
+  if [[ "${_tcp_ok}" == "false" ]]; then
+    echo "WARNING: TCP listener could not be enabled — only docker-exec psql will work."
+  fi
 fi
