@@ -198,12 +198,20 @@ docker run -d \
 # ────────────────────────────────────────────────────────────────────────────
 # Install pgBackRest inside the verify container
 #
-# WHY apt-get: pgBackRest is not bundled in the timescale/timescaledb Docker image.
-# The image is Debian-based; apt resolves all runtime dependencies automatically.
-# No ldd guard needed (unlike Alpine musl builds).
+# WHY apk + edge community pin: timescale/timescaledb:latest-pg18 is an Alpine
+# image, so apk is the only package manager available. The Alpine stable repos
+# ship pgbackrest 2.57.0-r0, but the addon container is built against
+# pgbackrest 2.58.0-r0 from alpine:edge community (see timescaledb/Dockerfile).
+# Restoring a 2.58-produced backup with a 2.57 client is not guaranteed to be
+# safe, so this script pins the exact same version + repo as the addon. If the
+# edge community repo no longer carries 2.58.0-r0, this install fails fast with
+# a clear error rather than silently degrading to 2.57.0-r0.
 # ────────────────────────────────────────────────────────────────────────────
-echo "==> Installing pgBackRest in verify container ..."
-docker exec "${CONTAINER_NAME}" bash -c "apt-get update -qq && apt-get install -y -qq pgbackrest"
+PGBACKREST_PIN="2.58.0-r0"
+PGBACKREST_REPO_URL="https://dl-cdn.alpinelinux.org/alpine/edge/community"
+echo "==> Installing pgBackRest ${PGBACKREST_PIN} in verify container ..."
+docker exec "${CONTAINER_NAME}" sh -c \
+  "apk add --no-cache --repository ${PGBACKREST_REPO_URL} 'pgbackrest=${PGBACKREST_PIN}'"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Copy pgbackrest.conf into the verify container and patch it
