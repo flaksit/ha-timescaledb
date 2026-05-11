@@ -113,7 +113,9 @@ fi
 #
 # Exits 1 if all three fail.
 # ────────────────────────────────────────────────────────────────────────────
-fetch_secret() {
+_fetch_secret_quiet() {
+  # Try the three priority sources. Returns 0 if the secret is found and non-empty,
+  # non-zero (and removes the dest file) otherwise. Never prints, never exits.
   local filename="$1"
   local dest_file="$2"
 
@@ -139,6 +141,17 @@ fetch_secret() {
     return 0
   fi
 
+  rm -f "$dest_file"
+  return 1
+}
+
+fetch_secret() {
+  # Strict variant: secret must be present. Exits 1 with a diagnostic on miss.
+  local filename="$1"
+  local dest_file="$2"
+  if _fetch_secret_quiet "$filename" "$dest_file"; then
+    return 0
+  fi
   echo "ERROR: could not acquire secret '${filename}'"
   echo "       Tried: ssh ${HA_SSH} docker exec ${CONTAINER:-<container>} cat /data/secrets/${filename}"
   [[ -n "$PASS_PREFIX" ]]      && echo "       Tried: pass show ${PASS_PREFIX}/${filename}"
@@ -147,14 +160,46 @@ fetch_secret() {
   exit 1
 }
 
+fetch_secret_optional() {
+  # Optional variant: returns 0 if found, 1 if not. No diagnostic, no exit.
+  _fetch_secret_quiet "$1" "$2"
+}
+
 # ────────────────────────────────────────────────────────────────────────────
-# Fetch secrets for the chosen repo
+# Fetch secrets for the chosen repo (strict) + the other repo's cipher pass
+# (optional — see below).
+#
+# WHY both cipher passes: pgbackrest validates the cipher-pass for every repo
+# declared with cipher-type=... in the conf on every invocation, even when only
+# one --repo=N is targeted. With both repos encrypted (the default for this
+# addon), a --repo=1 restore otherwise fails with:
+#   P00 ERROR: [037]: restore command requires option: repo2-cipher-pass
+# Fetching the non-target cipher pass is optional so single-repo deployments
+# (where only one secret file exists) still work.
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Fetching secrets for repo${REPO} ..."
-fetch_secret "pgbackrest_cipher_pass_repo${REPO}" "${TMPDIR_SECRETS}/cipher_pass"
+fetch_secret "pgbackrest_cipher_pass_repo${REPO}" "${TMPDIR_SECRETS}/cipher_pass_repo${REPO}"
 fetch_secret "pgbackrest_id_ed25519_repo${REPO}"  "${TMPDIR_SECRETS}/id_ed25519"
 fetch_secret "pgbackrest_known_hosts_repo${REPO}" "${TMPDIR_SECRETS}/known_hosts"
 chmod 600 "${TMPDIR_SECRETS}/id_ed25519"
+
+# Optional cipher pass for the other repo — needed only when the conf declares it.
+for _other_repo in 1 2; do
+  [[ "${_other_repo}" == "${REPO}" ]] && continue
+  if fetch_secret_optional "pgbackrest_cipher_pass_repo${_other_repo}" \
+        "${TMPDIR_SECRETS}/cipher_pass_repo${_other_repo}"; then
+    echo "==> Also fetched cipher pass for repo${_other_repo} (required for combined-conf validation)"
+  fi
+done
+
+# Build the -e flags for every cipher pass present so pgbackrest invocations see
+# them. Bash array preserves quoting correctly across `docker exec`.
+PGBACKREST_ENV=()
+for _r in 1 2; do
+  if [[ -s "${TMPDIR_SECRETS}/cipher_pass_repo${_r}" ]]; then
+    PGBACKREST_ENV+=( -e "PGBACKREST_REPO${_r}_CIPHER_PASS=$(cat "${TMPDIR_SECRETS}/cipher_pass_repo${_r}")" )
+  fi
+done
 
 # ────────────────────────────────────────────────────────────────────────────
 # Fetch or use pgbackrest.conf
@@ -258,7 +303,7 @@ docker exec "${CONTAINER_NAME}" bash -c \
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Fetching backup info for repo${REPO} ..."
 _info_json=$(docker exec \
-  -e "PGBACKREST_REPO${REPO}_CIPHER_PASS=$(cat "${TMPDIR_SECRETS}/cipher_pass")" \
+  "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
   pgbackrest --stanza=timescaledb "--repo=${REPO}" info --output=json 2>/dev/null \
   || echo '[]')
@@ -279,7 +324,7 @@ _backup_stop=$(printf '%s' "${_info_json}" | jq -r \
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Restoring repo${REPO} backup to /restore/pgdata ..."
 docker exec \
-  -e "PGBACKREST_REPO${REPO}_CIPHER_PASS=$(cat "${TMPDIR_SECRETS}/cipher_pass")" \
+  "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
   pgbackrest --stanza=timescaledb "--repo=${REPO}" \
     restore --pg1-path=/restore/pgdata --delta
