@@ -47,11 +47,13 @@ The script tries each method in sequence and uses the first that succeeds.
 ### Priority 1: Live HAOS host via SSH (recommended)
 
 ```bash
-ssh <ha-ssh> 'cat /data/secrets/<filename>'
+ssh <ha-ssh> "docker exec <container> cat /data/secrets/<filename>"
 ```
 
-Requires SSH access to the HAOS host and that the TimescaleDB container is running. No SCP
-needed — HAOS SSH does not support SCP, so the script pipes `cat` output directly. This is
+Secrets live inside the TimescaleDB addon container at `/data/secrets/`; that path is
+not visible on the HAOS host filesystem, so the script pipes `cat` output through
+`docker exec`. Requires SSH access to the HAOS host and a running container (auto-detected
+unless `--container` is supplied). No SCP needed — HAOS SSH does not support SCP. This is
 the default and works for routine drills when the Pi is online.
 
 ### Priority 2: `pass` password store (offline fallback)

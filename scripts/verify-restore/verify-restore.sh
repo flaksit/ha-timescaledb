@@ -103,7 +103,11 @@ fi
 # Secret acquisition — fetch_secret <filename> <dest_file>
 #
 # Three-priority strategy (D-07):
-#   1. ssh cat /data/secrets/<file>  — primary: no SCP on HAOS; pipe works
+#   1. ssh ha "docker exec <ctr> cat /data/secrets/<file>"
+#      — primary: secrets live inside the addon container at /data/secrets/;
+#        the path does not exist on the HAOS host filesystem. Requires the
+#        live container to be reachable (skipped in offline DR mode where
+#        CONTAINER is empty).
 #   2. pass show <prefix>/<file>     — offline fallback; only if --pass-path given
 #   3. --secrets-dir <path>          — last resort; only if --secrets-dir given
 #
@@ -113,8 +117,10 @@ fetch_secret() {
   local filename="$1"
   local dest_file="$2"
 
-  # Priority 1: SSH cat from HAOS /data/secrets/
-  if ssh "$HA_SSH" "cat /data/secrets/${filename}" > "$dest_file" 2>/dev/null \
+  # Priority 1: docker exec cat into the live addon container.
+  if [[ -n "$CONTAINER" ]] \
+      && ssh "$HA_SSH" "docker exec ${CONTAINER} cat /data/secrets/${filename}" \
+            > "$dest_file" 2>/dev/null \
       && [[ -s "$dest_file" ]]; then
     return 0
   fi
@@ -134,7 +140,7 @@ fetch_secret() {
   fi
 
   echo "ERROR: could not acquire secret '${filename}'"
-  echo "       Tried: ssh ${HA_SSH} cat /data/secrets/${filename}"
+  echo "       Tried: ssh ${HA_SSH} docker exec ${CONTAINER:-<container>} cat /data/secrets/${filename}"
   [[ -n "$PASS_PREFIX" ]]      && echo "       Tried: pass show ${PASS_PREFIX}/${filename}"
   [[ -n "$SECRETS_DIR_FLAG" ]] && echo "       Tried: ${SECRETS_DIR_FLAG}/${filename}"
   echo "       Use --pass-path or --secrets-dir to provide secrets when the live Pi is offline."
