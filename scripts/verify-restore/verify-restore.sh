@@ -269,14 +269,33 @@ docker cp "${TMPDIR_SECRETS}/pgbackrest.conf" "${CONTAINER_NAME}:/etc/pgbackrest
 docker exec "${CONTAINER_NAME}" bash -c \
   "sed -i 's|pg1-path=.*|pg1-path=/restore/pgdata|' /etc/pgbackrest/pgbackrest.conf"
 
-# Override SSH key and known_hosts paths to the read-only /secrets mount
-docker exec "${CONTAINER_NAME}" bash -c \
-  "sed -i \"s|repo${REPO}-sftp-private-key-file=.*|repo${REPO}-sftp-private-key-file=/secrets/id_ed25519|\" /etc/pgbackrest/pgbackrest.conf; \
-   sed -i \"s|repo${REPO}-sftp-known-hosts-file=.*|repo${REPO}-sftp-known-hosts-file=/secrets/known_hosts|\" /etc/pgbackrest/pgbackrest.conf"
+# Override SSH key + known_hosts paths for EVERY repo, not just the target.
+#
+# WHY rewrite every repo: pgbackrest parses the entire conf on each invocation
+# and validates SSH paths for all configured sftp repos, even when only
+# --repo=N is targeted. Leaving repo<other>-sftp-private-key-file pointing at
+# the addon container's /data/secrets/... path (which does not exist in the
+# verify container) causes "known hosts failure" or "key file not found"
+# during --repo=N restore.
+#
+# WHY same key for every repo: the verify container only carries the target
+# repo's key and known_hosts (one set fetched into /secrets). pgbackrest only
+# opens an SSH session for the targeted repo during restore, so reusing the
+# target's key file string for the other repo's path is harmless — pgbackrest
+# never actually authenticates with it on a single-repo restore.
+#
+# WHY this option name is 'sftp-known-host' (singular, no '-file'): that is
+# the canonical pgBackRest 2.5x option key. An earlier 'sftp-known-hosts-file'
+# substitution silently failed to match anything in the conf, leaving the
+# default path in place and producing LIBSSH2_KNOWNHOST_CHECK_NOTFOUND.
+docker exec "${CONTAINER_NAME}" sh -c \
+  "sed -i -E \
+     -e 's|^(repo[0-9]+)-sftp-private-key-file=.*|\\1-sftp-private-key-file=/secrets/id_ed25519|' \
+     -e 's|^(repo[0-9]+)-sftp-known-host=.*|\\1-sftp-known-host=/secrets/known_hosts|' \
+     /etc/pgbackrest/pgbackrest.conf"
 
-# The /secrets volume is mounted :ro; chmod must be applied inside the container separately
-# by touching the file via docker exec into a writable location is not needed since the key
-# is already in the volume with correct host permissions (chmod 600 applied above).
+# The /secrets volume is mounted :ro; chmod was applied on the host side
+# (chmod 600 on id_ed25519) before the container mount took effect.
 
 # WHY log-path and spool-path redirects: /var/log/pgbackrest and /var/lib/pgbackrest may
 # not exist or lack write permissions in the Debian timescale image (different from the live
