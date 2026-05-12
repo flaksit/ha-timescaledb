@@ -194,8 +194,14 @@ run_backup() {
 #   Mon–Sat → incr
 #
 # Repo2 annual dispatch (D-06):
-#   Jan 1 → full backup with --no-archive-check (repo2 has no streaming WAL;
-#     without this flag pgbackrest blocks waiting for a WAL segment that never arrives).
+#   Jan 1 → full backup taken inside a brief dual-archive window. PG's
+#     archive-push fans WAL to repo1 + repo2 just long enough for pgbackrest
+#     archive-check to pass and archive-copy=y to embed the start/stop WAL
+#     into the repo2 backup directory. Steady state stays repo1-only. See
+#     do_yearly_repo2_backup() below and plans/1-not-good-doesn-t-wondrous-robin.md
+#     for the architectural rationale (the prior implementation used
+#     --no-archive-check which produced apparently-complete but actually
+#     non-self-contained backups).
 #
 # WHY _dow from `date +%u`: POSIX ISO 8601 — 1=Mon, 7=Sun. BusyBox date supports %u.
 # WHY shell arithmetic for _first_sunday: _day -le 7 means today falls in the first
@@ -229,9 +235,63 @@ dispatch_for_date() {
 
     # Repo2 annual dispatch — Jan 1 only (independent of repo1 result)
     if [ "${_month}" = "01" ] && [ "${_day}" = "01" ]; then
-        bashio::log.info "pgbackrest-cron: Jan 1 — dispatching repo2 annual full (--no-archive-check)"
-        run_backup repo2 full --no-archive-check
+        bashio::log.info "pgbackrest-cron: Jan 1 — dispatching repo2 annual full (dual-archive window)"
+        do_yearly_repo2_backup
     fi
+}
+
+# ---------------------------------------------------------------------------
+# do_yearly_repo2_backup — run the annual repo2 full so it is self-contained.
+#
+# Sequence:
+#   1. enable_dual_archive  → swap archive_command config to fan WAL to both repos
+#   2. force_wal_switch     → produce a fresh segment under the dual config
+#   3. wait_for_wal_in_repo2 → confirm the segment landed in repo2's archive
+#   4. run_backup repo2 full → archive-check passes, archive-copy=y embeds WAL
+#   5. disable_dual_archive → swap back to repo1-only (always runs)
+#   6. post_yearly_archive_cleanup → sftp rm the brief residual repo2 WAL
+#
+# WHY trap on EXIT of this function isn't enough: bash traps fire on shell exit,
+# not function return. We use an explicit cleanup label + invoke disable on
+# every exit path inside the function. The outer pgbackrest-cron loop must
+# never get stuck with the dual config in place.
+#
+# Failures at any pre-backup step skip the backup and notify; this is preferred
+# over running pgbackrest backup with the wrong archive config and producing
+# yet another non-self-contained backup. The HA sensor for last_backup_repo2
+# is updated by run_backup on success, so a skipped run is visible as a stale
+# sensor timestamp.
+# ---------------------------------------------------------------------------
+do_yearly_repo2_backup() {
+    if ! enable_dual_archive; then
+        notify_supervisor "Yearly repo2 backup skipped" \
+            "enable_dual_archive failed — check that pgbackrest-archive-dual.conf was rendered at startup. Restart the addon to retry."
+        return 1
+    fi
+
+    local _wal
+    if ! _wal=$(force_wal_switch); then
+        bashio::log.error "pgbackrest-cron: yearly repo2 abort — force_wal_switch failed"
+        disable_dual_archive
+        notify_supervisor "Yearly repo2 backup skipped" \
+            "pg_switch_wal() failed before the annual repo2 backup. The addon is still healthy; investigate PostgreSQL connectivity."
+        return 1
+    fi
+
+    if ! wait_for_wal_in_repo2 "${_wal}" 120; then
+        bashio::log.error "pgbackrest-cron: yearly repo2 abort — WAL ${_wal} not seen in repo2 archive within 120s"
+        disable_dual_archive
+        notify_supervisor "Yearly repo2 backup skipped" \
+            "WAL segment ${_wal} did not appear in repo2 archive within 120s. The dual-archive window is broken; the annual backup did not run."
+        return 1
+    fi
+
+    # archive-check is now satisfied — drop the historical --no-archive-check.
+    run_backup repo2 full
+
+    disable_dual_archive
+    post_yearly_archive_cleanup
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -243,6 +303,20 @@ dispatch_for_date() {
 # _target = _today_midnight + 7200 (7200s = 2h = 02:00 UTC).
 # If 02:00 today already passed, advance _target by 86400s (one day).
 # ---------------------------------------------------------------------------
+# Manual trigger files for operator-driven runs (testing / retro-cleanup).
+# Drop a file at one of these paths and pgbackrest-cron will execute the
+# associated action on its next wake-up OR right away on service restart.
+# Files are deleted once consumed so a single touch produces a single run.
+FORCE_YEARLY_REPO2_TRIGGER=/data/force_yearly_repo2_backup
+
+# On startup, consume any trigger files BEFORE entering the calendar sleep
+# loop so an operator can: drop trigger -> restart addon -> immediate run.
+if [ -f "${FORCE_YEARLY_REPO2_TRIGGER}" ]; then
+    bashio::log.info "pgbackrest-cron: ${FORCE_YEARLY_REPO2_TRIGGER} found — running yearly repo2 backup now"
+    rm -f "${FORCE_YEARLY_REPO2_TRIGGER}"
+    do_yearly_repo2_backup || true
+fi
+
 while true; do
     _now=$(date +%s)
     _today_midnight=$(( _now - (_now % 86400) ))
@@ -254,5 +328,13 @@ while true; do
 
     _today=$(date +"%Y-%m-%d")
     bashio::log.info "pgbackrest-cron: woke at 02:00 UTC for ${_today}"
+
+    # Consume any operator trigger that arrived during the sleep window.
+    if [ -f "${FORCE_YEARLY_REPO2_TRIGGER}" ]; then
+        bashio::log.info "pgbackrest-cron: ${FORCE_YEARLY_REPO2_TRIGGER} found — running yearly repo2 backup ahead of calendar dispatch"
+        rm -f "${FORCE_YEARLY_REPO2_TRIGGER}"
+        do_yearly_repo2_backup || true
+    fi
+
     dispatch_for_date "${_today}"
 done

@@ -236,3 +236,182 @@ notify_backup_failure() {
         "pgBackRest ${repo_id} backup failed" \
         "${operation} failed after all retry attempts. Last error: ${stderr_tail}. Check the app log for full output."
 }
+
+# -----------------------------------------------------------------------------
+# Dual-archive window helpers — used around the yearly repo2 backup so WAL
+# fans briefly to both repos. Without this window, the repo2 backup is not
+# self-contained (archive-copy=y can only embed WAL from the SAME repo's
+# archive, and repo2 has no continuous WAL stream by design — D-22a).
+# See plans/1-not-good-doesn-t-wondrous-robin.md for the architectural context.
+# -----------------------------------------------------------------------------
+
+ARCHIVE_CONF=/etc/pgbackrest/pgbackrest-archive.conf
+ARCHIVE_CONF_DUAL=/etc/pgbackrest/pgbackrest-archive-dual.conf
+ARCHIVE_CONF_BACKUP="${ARCHIVE_CONF}.repo1only.bak"
+
+# Swap the dual-repo archive config into place atomically.
+#
+# WHY atomic via cp-then-mv: PG's archive_command opens the file fresh on
+# every WAL segment push. A partially-written conf during a naive cp would
+# cause that archive-push to fail. cp to a sibling path on the same fs, then
+# mv (atomic rename) replaces the file in a single inode flip.
+#
+# Stashes the previous content at ARCHIVE_CONF_BACKUP so disable_dual_archive
+# can restore it without re-rendering. Returns 0 on success, non-zero on any
+# step's failure (caller should NOT proceed to backup if this fails).
+enable_dual_archive() {
+    if [ ! -f "${ARCHIVE_CONF_DUAL}" ]; then
+        bashio::log.error "enable_dual_archive: ${ARCHIVE_CONF_DUAL} missing — init-db.sh render must have failed"
+        return 1
+    fi
+
+    # Capture the current repo1-only conf so disable_dual_archive can restore it.
+    if ! cp -p "${ARCHIVE_CONF}" "${ARCHIVE_CONF_BACKUP}"; then
+        bashio::log.error "enable_dual_archive: cp ${ARCHIVE_CONF} -> ${ARCHIVE_CONF_BACKUP} failed"
+        return 1
+    fi
+
+    # Stage the dual conf next to the live path, then mv-rename for atomicity.
+    local _staged="${ARCHIVE_CONF}.dual.staged"
+    if ! cp -p "${ARCHIVE_CONF_DUAL}" "${_staged}"; then
+        bashio::log.error "enable_dual_archive: cp ${ARCHIVE_CONF_DUAL} -> ${_staged} failed"
+        rm -f "${ARCHIVE_CONF_BACKUP}"
+        return 1
+    fi
+    if ! mv "${_staged}" "${ARCHIVE_CONF}"; then
+        bashio::log.error "enable_dual_archive: mv ${_staged} -> ${ARCHIVE_CONF} failed"
+        rm -f "${_staged}" "${ARCHIVE_CONF_BACKUP}"
+        return 1
+    fi
+    bashio::log.info "enable_dual_archive: archive-push will fan WAL to repo1 + repo2"
+    return 0
+}
+
+# Restore the repo1-only archive config. Idempotent: safe to call even when
+# enable_dual_archive was not called (then the .bak does not exist and this
+# is a no-op). Always returns 0 — disable_dual_archive must never fail-out
+# of the caller because the caller (the trap) needs to clean up.
+disable_dual_archive() {
+    if [ ! -f "${ARCHIVE_CONF_BACKUP}" ]; then
+        return 0
+    fi
+    local _staged="${ARCHIVE_CONF}.repo1only.staged"
+    if cp -p "${ARCHIVE_CONF_BACKUP}" "${_staged}" \
+        && mv "${_staged}" "${ARCHIVE_CONF}"; then
+        rm -f "${ARCHIVE_CONF_BACKUP}"
+        bashio::log.info "disable_dual_archive: archive-push restored to repo1-only"
+    else
+        # Best-effort: notify but never propagate failure here.
+        bashio::log.error "disable_dual_archive: failed to restore ${ARCHIVE_CONF} — manual fix required"
+        notify_supervisor \
+            "pgBackRest archive config swap failed" \
+            "disable_dual_archive could not restore ${ARCHIVE_CONF} from ${ARCHIVE_CONF_BACKUP}. WAL may continue fanning to repo2. Restart the addon to re-render."
+    fi
+    return 0
+}
+
+# Force PostgreSQL to switch WAL so a new segment is produced and archived
+# under the current archive_command config. Used right after
+# enable_dual_archive to push a fresh segment to both repos.
+#
+# Echoes the WAL filename returned by pg_switch_wal (so callers can poll for
+# its arrival in repo2's archive). Returns 0 on success, 1 on psql failure.
+force_wal_switch() {
+    local _wal
+    _wal=$(psql -h /tmp -U postgres -d postgres -tAc \
+        "SELECT pg_walfile_name(pg_switch_wal());" 2>/dev/null \
+        | tr -d '[:space:]')
+    if [ -z "${_wal}" ]; then
+        bashio::log.error "force_wal_switch: psql pg_switch_wal returned empty"
+        return 1
+    fi
+    bashio::log.info "force_wal_switch: pg_switch_wal returned ${_wal}"
+    printf '%s\n' "${_wal}"
+    return 0
+}
+
+# Block until the named WAL segment shows up in repo2's archive, or timeout.
+# repo2 has no continuous archive — this is the only way to confirm the
+# brief dual-archive window actually shipped a segment before launching the
+# backup command (whose archive-check otherwise blocks for a long timeout).
+#
+# Usage: wait_for_wal_in_repo2 <wal_name> [timeout_seconds]
+# Returns 0 once present, 1 on timeout, 2 on pgbackrest invocation failure.
+wait_for_wal_in_repo2() {
+    local _wal="$1"
+    local _timeout="${2:-120}"
+    local _deadline=$(( $(date +%s) + _timeout ))
+    local _info
+
+    bashio::log.info "wait_for_wal_in_repo2: polling for ${_wal} (timeout ${_timeout}s)"
+    while [ "$(date +%s)" -lt "${_deadline}" ]; do
+        _info=$(env \
+            "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
+            "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
+            gosu postgres /usr/bin/pgbackrest \
+            --stanza=timescaledb --repo=2 info --output=json 2>/dev/null || echo '[]')
+        # archive.max is the most recent archived WAL filename for the current
+        # db version. Once it equals or exceeds the segment we forced, the
+        # segment has landed.
+        local _max
+        _max=$(printf '%s' "${_info}" | jq -r \
+            '.[0].archive | map(.max) | last // empty' 2>/dev/null || true)
+        if [ -n "${_max}" ] && [ "${_max}" \> "${_wal}" -o "${_max}" = "${_wal}" ]; then
+            bashio::log.info "wait_for_wal_in_repo2: ${_wal} present (max=${_max})"
+            return 0
+        fi
+        sleep 5
+    done
+    bashio::log.error "wait_for_wal_in_repo2: timed out after ${_timeout}s waiting for ${_wal}"
+    return 1
+}
+
+# Delete residual WAL segments left in repo2's archive after a yearly backup.
+# Once archive-copy=y embedded the consistency-window segments inside the
+# backup directory, the archive copies are redundant. pgbackrest expire does
+# not prune them (no retention rule covers a non-continuous archive — see
+# plans/1-not-good-doesn-t-wondrous-robin.md for the analysis). Use direct
+# repo2 SFTP rm.
+#
+# Best-effort: failures here do not invalidate the backup. Log + continue.
+post_yearly_archive_cleanup() {
+    local _host _port _user _path
+    _host=$(bashio::config 'repo2_sftp_host')
+    _port=$(bashio::config 'repo2_sftp_port')
+    _user=$(bashio::config 'repo2_sftp_user')
+    _path=$(bashio::config 'repo2_sftp_path')
+    if [ -z "${_host}" ] || [ -z "${_user}" ]; then
+        bashio::log.warning "post_yearly_archive_cleanup: repo2 sftp config missing — skipping"
+        return 0
+    fi
+    # Remove trailing slash from configured path; the script appends explicit paths.
+    _path="${_path%/}"
+    if [ -z "${_path}" ]; then
+        _path=""  # path '/' means chroot root — leave empty so 'rm /archive/...' is clean
+    fi
+
+    bashio::log.info "post_yearly_archive_cleanup: removing residual WAL from repo2 archive"
+    # Archive layout on the SFTP root (verified by direct ls):
+    #   /archive/timescaledb/archive.info        ← MUST keep (pgbackrest metadata)
+    #   /archive/timescaledb/archive.info.copy   ← MUST keep
+    #   /archive/timescaledb/<pg-ver>/<prefix>/<wal-segment>.gz   ← delete these
+    #   /archive/timescaledb/<pg-ver>/                            ← keep dir
+    #   /archive/timescaledb/<pg-ver>/<prefix>/                   ← may rmdir if empty
+    #
+    # WAL segment files all start with '0' (hex). Glob '0*' inside the prefix
+    # subdir avoids touching archive.info or the metadata at the timescaledb/ level.
+    # -b - reads sftp commands from stdin; leading '-' on each command means
+    # "continue on error" (the dir may already be empty from a prior run).
+    sftp \
+        -o "StrictHostKeyChecking=yes" \
+        -o "UserKnownHostsFile=${SECRETS_DIR}/pgbackrest_known_hosts_repo2" \
+        -i "${SECRETS_DIR}/pgbackrest_id_ed25519_repo2" \
+        -P "${_port}" \
+        -b - \
+        "${_user}@${_host}" <<'SFTP_EOF' >/dev/null 2>&1 || true
+-rm /archive/timescaledb/*/*/0*
+-rmdir /archive/timescaledb/*/*
+SFTP_EOF
+    bashio::log.info "post_yearly_archive_cleanup: done (best-effort)"
+    return 0
+}

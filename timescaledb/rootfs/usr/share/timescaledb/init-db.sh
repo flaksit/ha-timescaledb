@@ -288,6 +288,26 @@ if bashio::config.true 'backup_enabled'; then
     chown postgres:postgres /etc/pgbackrest/pgbackrest-archive.conf 2>/dev/null || true
     chmod 640 /etc/pgbackrest/pgbackrest-archive.conf 2>/dev/null || true
 
+    # Render the dual-repo variant once at init time. Stored next to the
+    # repo1-only file; swapped in by enable_dual_archive() during yearly
+    # repo2 backups so archive-push briefly fans WAL to repo2 too. This
+    # makes pgbackrest's archive-copy=y embed the consistency-window WAL
+    # into the repo2 backup directory, producing a self-contained backup
+    # without a year-round repo2 WAL stream.
+    bashio::log.info "Rendering pgbackrest-archive-dual.conf (archive-push, repo1+repo2) from app options..."
+    if ! tempio \
+        -conf /data/options.json \
+        -template /etc/pgbackrest/pgbackrest-archive-dual.conf.tmpl \
+        -out /etc/pgbackrest/pgbackrest-archive-dual.conf; then
+        # Soft-fail: if rendering the dual variant fails, archive-push still
+        # works (the repo1-only file is rendered above). The yearly repo2
+        # backup will fail later, surfaced via the existing notification path,
+        # but daily repo1 backups remain unaffected.
+        bashio::log.warning "pgBackRest dual-archive config render failed — yearly repo2 backup will fail until next restart"
+    fi
+    chown postgres:postgres /etc/pgbackrest/pgbackrest-archive-dual.conf 2>/dev/null || true
+    chmod 640 /etc/pgbackrest/pgbackrest-archive-dual.conf 2>/dev/null || true
+
     # Phase 1: per-repo secrets check and cipher generation.
     # stanza-create does NOT accept --repo (it operates on ALL configured repos at once),
     # so this loop only validates secrets and accumulates ready repos — stanza-create runs

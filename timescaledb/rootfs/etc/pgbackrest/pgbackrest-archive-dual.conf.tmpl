@@ -1,0 +1,76 @@
+# pgbackrest-archive-dual.conf.tmpl — DUAL-REPO archive-push config
+# Used ONLY during the yearly repo2 backup window. The default archive-push
+# config (pgbackrest-archive.conf) is repo1-only (D-22a). Around each yearly
+# repo2 backup the cron job swaps THIS file into /etc/pgbackrest/pgbackrest-archive.conf
+# so the few WAL segments produced during backup_start → backup_stop reach
+# repo2's archive too. archive-copy=y (set in pgbackrest.conf for the main
+# backup command) then embeds those segments into the repo2 backup directory,
+# making the backup self-contained without keeping a year-round repo2 WAL stream.
+#
+# After the yearly backup completes, the cron job swaps the repo1-only file
+# back. The residual WAL segments left in repo2's archive are cleaned up by
+# post_yearly_archive_cleanup() in backup-lib.sh.
+#
+# Loaded EXCLUSIVELY by PG's archive_command via --config=… (same path as
+# pgbackrest-archive.conf — the swap is file content, not path).
+#
+# NOTE: This file is a COMPLETE config from pgBackRest's perspective — it does
+# NOT inherit from pgbackrest.conf. Any [global] option needed by archive-push
+# must be present here. Missing options cause archive-push to fail (Pitfall 3
+# in 08-05b-RESEARCH.md).
+#
+# Rendered by tempio from /data/options.json — DO NOT edit in-container;
+# edit the .tmpl in rootfs/etc/pgbackrest/ and rebuild the image.
+
+{{ if .backup_enabled }}
+[global]
+log-level-console=info
+log-level-file=off
+log-path=/var/log/pgbackrest
+compress-type=zst
+compress-level=3
+process-max=2
+# archive-copy is intentionally absent: it applies only to backup commands,
+# not to archive-push invocations. It lives in /etc/pgbackrest/pgbackrest.conf.
+
+[timescaledb]
+pg1-path=/data/postgres
+# Alpine PG uses /tmp for the Unix socket, not the default /var/run/postgresql
+pg1-socket-path=/tmp
+
+{{ if .repo1_sftp_host }}
+# repo1 — same configuration as the repo1-only archive config (the dual file
+# differs ONLY by adding repo2). Keep these blocks aligned with
+# pgbackrest-archive.conf.tmpl.
+repo1-type=sftp
+repo1-path={{ .repo1_sftp_path }}
+repo1-sftp-host={{ .repo1_sftp_host }}
+repo1-sftp-host-port={{ .repo1_sftp_port }}
+repo1-sftp-host-user={{ .repo1_sftp_user }}
+repo1-sftp-host-key-check-type=strict
+repo1-sftp-host-key-hash-type=sha256
+repo1-sftp-known-host=/data/secrets/pgbackrest_known_hosts_repo1
+repo1-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo1
+repo1-cipher-type=aes-256-cbc
+repo1-bundle=y
+repo1-block=y
+{{ end }}
+
+{{ if .repo2_sftp_host }}
+# repo2 — temporarily included so archive-push fans WAL to repo2 for the
+# duration of the yearly backup. Without this block, repo2's archive stays
+# empty and pgbackrest's archive-check (during backup --repo=2) blocks.
+repo2-type=sftp
+repo2-path={{ .repo2_sftp_path }}
+repo2-sftp-host={{ .repo2_sftp_host }}
+repo2-sftp-host-port={{ .repo2_sftp_port }}
+repo2-sftp-host-user={{ .repo2_sftp_user }}
+repo2-sftp-host-key-check-type=strict
+repo2-sftp-host-key-hash-type=sha256
+repo2-sftp-known-host=/data/secrets/pgbackrest_known_hosts_repo2
+repo2-sftp-private-key-file=/data/secrets/pgbackrest_id_ed25519_repo2
+repo2-cipher-type=aes-256-cbc
+repo2-bundle=y
+repo2-block=y
+{{ end }}
+{{ end }}
