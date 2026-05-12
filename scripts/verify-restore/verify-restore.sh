@@ -315,6 +315,32 @@ docker exec "${CONTAINER_NAME}" sh -c \
      -e 's|^(repo[0-9]+)-sftp-known-host=.*|\\1-sftp-known-host=/secrets/known_hosts|' \
      /etc/pgbackrest/pgbackrest.conf"
 
+# Embed each repo's cipher-pass directly into pgbackrest.conf so child
+# processes spawned by PostgreSQL during recovery — specifically the
+# restore_command -> 'pgbackrest archive-get' that pulls WAL segments — can
+# decrypt the repo without inheriting env vars from the verify driver.
+#
+# WHY env vars alone are not enough: the script invokes pgbackrest via
+# 'docker exec -e PGBACKREST_REPOn_CIPHER_PASS=...', so the env reaches
+# pgbackrest's restore command. But after restore, pg_ctl starts PostgreSQL
+# in a new process tree; PG then forks pgbackrest from postgresql.auto.conf's
+# restore_command without those env vars set. Repo2 verifies surfaced this:
+# repo2 has no WAL archive of its own, so recovery must pull WAL from
+# repo1's archive, and the embedded archive-get failed with:
+#   P00 ERROR: [037]: archive-get command requires option: repo1-cipher-pass
+#
+# WHY stdin (printf | tee -a) instead of a 'sh -c "echo ... >> ..."' wrapper:
+# the cipher pass would otherwise appear on the docker exec process argv and
+# be visible to anyone running 'ps' on the host. Piping through stdin keeps
+# the secret out of process tables. The verify cluster is throwaway, but
+# good hygiene costs nothing here.
+for _r in 1 2; do
+  if [[ -s "${TMPDIR_SECRETS}/cipher_pass_repo${_r}" ]]; then
+    printf 'repo%d-cipher-pass=%s\n' "${_r}" "$(cat "${TMPDIR_SECRETS}/cipher_pass_repo${_r}")" \
+      | docker exec -i "${CONTAINER_NAME}" tee -a /etc/pgbackrest/pgbackrest.conf > /dev/null
+  fi
+done
+
 # The /secrets volume is mounted :ro; chmod was applied on the host side
 # (chmod 600 on id_ed25519) before the container mount took effect.
 
