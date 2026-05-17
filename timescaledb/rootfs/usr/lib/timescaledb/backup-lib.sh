@@ -39,9 +39,25 @@ notify_supervisor() {
 }
 
 # Classify a pgbackrest exit code + stderr as "transient" or "non-transient".
-# Non-transient errors must not be retried — they require manual intervention (wrong key, cipher mismatch).
-# Transient errors (network timeouts, temporary DNS failures) are safe to retry.
-# Defaults to "non-transient" when the error cannot be classified — safety-first.
+# Non-transient errors must not be retried — they require manual intervention
+# (wrong key, cipher mismatch, revoked SSH access). Transient errors (network
+# timeouts, temporary DNS failures, SFTP subsystem hiccups) are safe to retry.
+#
+# Default policy (when no explicit classification matches): TRANSIENT.
+# Rationale: every classifier path lands in the same retry loop with a bounded
+# number of attempts and persistent_notification on exhaustion. The downside of
+# misclassifying a truly unfixable error as transient is ~33 minutes of wasted
+# retries before the same notification fires — operator gets the same eventual
+# signal. The downside of misclassifying a genuinely transient failure as
+# non-transient is immediate give-up and a lost backup window — strictly worse
+# (data exposure vs. delayed notification). Both stanza-create retry (3-attempt)
+# and pgbackrest-cron retry (6-attempt) share this classifier; the flip applies
+# to both. Concrete failure mode that motivated this default: Hetzner sub-account
+# external-reach disabled produces stderr "unable to init libssh2_sftp session"
+# which matched no pattern and was treated as non-transient by the previous
+# safety default — the same message can also fire on genuinely transient SFTP
+# subsystem resets, where give-up-immediately is the wrong call.
+#
 # Usage: classify_pgbackrest_error <exit_code> [stderr_file]
 # Output: echoes "transient" or "non-transient"
 classify_pgbackrest_error() {
@@ -60,15 +76,16 @@ classify_pgbackrest_error() {
         stderr_content=$(tail -c 4096 "${stderr_file}" 2>/dev/null || true)
     fi
 
-    # Non-transient patterns: auth/permission failures, known_hosts mismatches, key problems
+    # Explicit non-transient patterns: auth / key / cipher problems that clearly
+    # require an operator to fix configuration or credentials. Retrying these
+    # only delays the inevitable notification by ~33 minutes.
     if echo "${stderr_content}" | grep -qiE 'authentication|denied|permission|unknown key|not found in known_hosts|host key verification|invalid private key|cipher'; then
         echo "non-transient"
-    # Transient patterns: network connectivity / temporary infrastructure problems
-    elif echo "${stderr_content}" | grep -qiE 'timeout|timed out|Connection reset|Connection refused|Temporary failure|could not resolve|network is unreachable|EOF from client'; then
-        echo "transient"
     else
-        # Unrecognized exit code with no pattern match — default to non-transient for safety
-        echo "non-transient"
+        # Everything else: assume transient and let the retry loop work. If the
+        # error is in fact permanent, the loop exhausts after the usual backoff
+        # and notify_backup_failure fires with the captured stderr tail.
+        echo "transient"
     fi
 }
 
