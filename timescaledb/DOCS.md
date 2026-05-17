@@ -151,7 +151,9 @@ PostgreSQL data is stored in the app's persistent `/data/postgres` directory. Th
 - **Preserved** across app restarts and updates
 - **Excluded** from Home Assistant snapshots (too large for the snapshot format)
 
-> **Important:** This app's data is not included in HA backups. Use the **Backup** section below to configure pgBackRest off-host.
+Home Assistant snapshots run in **hot** mode (the app keeps running during backup). Only secrets and rendered config are captured — enough to bootstrap pgBackRest on a fresh install. The DB itself is not in the HA snapshot.
+
+> **Important:** This app's data is not included in HA backups. **Enable pgBackRest in the Backup section below** to protect DB contents — HA snapshots alone do not back up the database.
 
 ## Backup
 

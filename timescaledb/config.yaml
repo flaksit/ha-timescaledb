@@ -1,5 +1,5 @@
 name: TimescaleDB
-version: "1.1.0-phase9.12"
+version: "1.1.0-phase9.13"
 slug: timescaledb
 description: PostgreSQL 18 + TimescaleDB 2.26 time-series database for Home Assistant
 url: https://github.com/flaksit/ha-timescaledb
@@ -21,7 +21,7 @@ ports_description:
   5432/tcp: PostgreSQL
 timeout: 60
 watchdog: "tcp://[HOST]:5432"
-backup: cold
+backup: hot
 backup_exclude:
   - data/postgres
 map:
