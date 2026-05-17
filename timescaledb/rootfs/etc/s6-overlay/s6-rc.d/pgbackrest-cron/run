@@ -113,6 +113,14 @@ run_backup() {
 
         bashio::log.info "pgbackrest-cron: ${repo_id} ${backup_type} attempt ${_attempt}/6..."
         _exit_code=0
+        # Capture stdout+stderr: pgbackrest writes its INFO and ERROR lines to
+        # stdout via log-level-console=info, so a stderr-only redirect (the
+        # previous behavior) left _stderr_file empty. That fed an empty string
+        # into classify_pgbackrest_error and notify_backup_failure: the
+        # classifier silently fell through to the default policy (regex never
+        # matched anything) and the failure notification reached HA with
+        # "Last error: " — no diagnostic context. Capturing combined output
+        # makes both the regex match and the notification body meaningful.
         env \
             "PGBACKREST_REPO1_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo1" 2>/dev/null)" \
             "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
@@ -122,7 +130,14 @@ run_backup() {
             --type="${backup_type}" \
             backup \
             "${extra_args[@]}" \
-            2>"${_stderr_file}" || _exit_code=$?
+            >"${_stderr_file}" 2>&1 || _exit_code=$?
+
+        # Forward the captured per-attempt output back to the cron log so the
+        # addon log still shows pgbackrest's INFO/ERROR chatter. The combined
+        # redirect above is required for classifier + notification correctness;
+        # without this echo the redirect would also silently drop the per-attempt
+        # progress lines that operators rely on to triage backup failures.
+        cat "${_stderr_file}" || true
 
         if [ "${_exit_code}" -eq 0 ]; then
             _backup_ok=true
@@ -265,7 +280,8 @@ dispatch_for_date() {
 do_yearly_repo2_backup() {
     if ! enable_dual_archive; then
         notify_supervisor "Yearly repo2 backup skipped" \
-            "enable_dual_archive failed — check that pgbackrest-archive-dual.conf was rendered at startup. Restart the addon to retry."
+            "enable_dual_archive failed — check that pgbackrest-archive-dual.conf was rendered at startup. Restart the addon to retry." \
+            "pgbackrest-yearly-repo2-skipped"
         return 1
     fi
 
@@ -274,7 +290,8 @@ do_yearly_repo2_backup() {
         bashio::log.error "pgbackrest-cron: yearly repo2 abort — force_wal_switch failed"
         disable_dual_archive
         notify_supervisor "Yearly repo2 backup skipped" \
-            "pg_switch_wal() failed before the annual repo2 backup. The addon is still healthy; investigate PostgreSQL connectivity."
+            "pg_switch_wal() failed before the annual repo2 backup. The addon is still healthy; investigate PostgreSQL connectivity." \
+            "pgbackrest-yearly-repo2-skipped"
         return 1
     fi
 
@@ -282,7 +299,8 @@ do_yearly_repo2_backup() {
         bashio::log.error "pgbackrest-cron: yearly repo2 abort — WAL ${_wal} not seen in repo2 archive within 120s"
         disable_dual_archive
         notify_supervisor "Yearly repo2 backup skipped" \
-            "WAL segment ${_wal} did not appear in repo2 archive within 120s. The dual-archive window is broken; the annual backup did not run."
+            "WAL segment ${_wal} did not appear in repo2 archive within 120s. The dual-archive window is broken; the annual backup did not run." \
+            "pgbackrest-yearly-repo2-skipped"
         return 1
     fi
 

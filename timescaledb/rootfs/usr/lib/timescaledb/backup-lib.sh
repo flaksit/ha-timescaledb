@@ -13,10 +13,27 @@
 # Send a persistent notification to Home Assistant via the supervisor API.
 # Requires SUPERVISOR_TOKEN env var (auto-provided by HAOS to apps).
 # Non-fatal: on any failure (missing token, network error) logs a warning and returns 0.
-# Usage: notify_supervisor <title> <message>
+#
+# Why pass notification_id:
+#   - Without notification_id, persistent_notification.create produces a transient
+#     notification that appears in the UI bell but is NOT exposed as a
+#     state-tracked entity. That makes notifications unqueryable via /api/states
+#     and unautomatable (no entity to trigger off, no automation to surface, no
+#     way to write Lovelace cards or generate dashboards).
+#   - With notification_id, HA creates persistent_notification.<id> as a real
+#     entity that survives restarts and is dedupable: re-firing with the same
+#     id replaces the existing notification rather than spawning a new one. That
+#     prevents a flapping repo from filling the UI with a hundred copies of the
+#     same alert; the operator sees one current notification per condition.
+#   - All callers SHOULD pass a stable kebab-case slug that identifies the
+#     condition (not the timestamp / not the message body) so a recurring
+#     failure overwrites its predecessor.
+#
+# Usage: notify_supervisor <title> <message> [notification_id]
 notify_supervisor() {
     local title="$1"
     local message="$2"
+    local notification_id="${3:-}"
 
     if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
         bashio::log.warning "pgBackRest: ${title} (SUPERVISOR_TOKEN unavailable — notification not sent)"
@@ -24,7 +41,13 @@ notify_supervisor() {
     fi
 
     local payload
-    payload=$(jq -nc --arg title "${title}" --arg message "${message}" '{title: $title, message: $message}')
+    if [ -n "${notification_id}" ]; then
+        payload=$(jq -nc --arg title "${title}" --arg message "${message}" --arg nid "${notification_id}" \
+            '{title: $title, message: $message, notification_id: $nid}')
+    else
+        payload=$(jq -nc --arg title "${title}" --arg message "${message}" \
+            '{title: $title, message: $message}')
+    fi
 
     # SUPERVISOR_TOKEN goes in the Authorization header only — NEVER in URL or log output
     if ! curl -fsS --max-time 10 \
@@ -243,6 +266,8 @@ update_ha_sensor() {
 # Send a backup failure notification via notify_supervisor.
 # Call after retry exhaustion. repo_id ∈ repo1|repo2.
 # Delegates to notify_supervisor — see that function for non-fatal guarantee.
+# Stable notification_id per repo so flapping failures dedupe in the HA UI
+# (one current notification per repo, not one per retry exhaustion).
 # Usage: notify_backup_failure <repo_id> <operation> <stderr_tail>
 notify_backup_failure() {
     local repo_id="$1"
@@ -251,7 +276,8 @@ notify_backup_failure() {
 
     notify_supervisor \
         "pgBackRest ${repo_id} backup failed" \
-        "${operation} failed after all retry attempts. Last error: ${stderr_tail}. Check the app log for full output."
+        "${operation} failed after all retry attempts. Last error: ${stderr_tail}. Check the app log for full output." \
+        "pgbackrest-backup-${repo_id}-failed"
 }
 
 # -----------------------------------------------------------------------------

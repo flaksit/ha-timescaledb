@@ -261,7 +261,8 @@ if bashio::config.true 'backup_enabled'; then
         # against wrong config, succeed, and silently activate archive_mode with bad settings.
         rm -f /etc/pgbackrest/pgbackrest.conf
         notify_supervisor "pgBackRest config render failed" \
-            "tempio failed to render pgbackrest.conf. Check that all required options are set in the app configuration."
+            "tempio failed to render pgbackrest.conf. Check that all required options are set in the app configuration." \
+            "pgbackrest-config-render-failed"
         bashio::log.error "pgBackRest config render failed — backup disabled for this boot"
         _archive_conf_ok=false  # ensure archive_mode=off fires below even if stanza-create is skipped
     fi
@@ -280,7 +281,8 @@ if bashio::config.true 'backup_enabled'; then
         -template /etc/pgbackrest/pgbackrest-archive.conf.tmpl \
         -out /etc/pgbackrest/pgbackrest-archive.conf; then
         notify_supervisor "pgBackRest archive-only config render failed" \
-            "tempio failed to render pgbackrest-archive.conf — init-db.sh will disable archive_mode (D-24)."
+            "tempio failed to render pgbackrest-archive.conf — init-db.sh will disable archive_mode (D-24)." \
+            "pgbackrest-archive-config-render-failed"
         bashio::log.error "pgBackRest archive-only config render failed (D-24 hard-fail)"
         _backup_any_success=false
         _archive_conf_ok=false
@@ -340,7 +342,8 @@ if bashio::config.true 'backup_enabled'; then
         [ ! -s "${KNOWN_FILE}" ] && _missing="${_missing} ${KNOWN_FILE}"
         if [ -n "${_missing}" ]; then
             notify_supervisor "pgBackRest ${REPO_ID} secrets missing" \
-                "The following files are required but missing or empty:${_missing}. See DOCS.md for provisioning steps."
+                "The following files are required but missing or empty:${_missing}. See DOCS.md for provisioning steps." \
+                "pgbackrest-${REPO_ID}-secrets-missing"
             bashio::log.error "pgBackRest ${REPO_ID}: missing secrets —${_missing}"
             continue
         fi
@@ -359,7 +362,8 @@ if bashio::config.true 'backup_enabled'; then
     if [ "${_repos_ready}" -gt 0 ]; then
         if ! pg_isready --host=/tmp --username=postgres --timeout=30 >/dev/null 2>&1; then
             notify_supervisor "pgBackRest pre-check failed" \
-                "PostgreSQL was not ready before stanza-create attempt. Restart the app to retry."
+                "PostgreSQL was not ready before stanza-create attempt. Restart the app to retry." \
+                "pgbackrest-stanza-precheck-failed"
             bashio::log.error "pgBackRest: PG not ready — skipping stanza-create"
         else
             _stanza_ok=false
@@ -378,7 +382,12 @@ if bashio::config.true 'backup_enabled'; then
                     "PGBACKREST_REPO2_CIPHER_PASS=$(cat "${SECRETS_DIR}/pgbackrest_cipher_pass_repo2" 2>/dev/null)" \
                     gosu postgres /usr/bin/pgbackrest \
                     --stanza=timescaledb \
-                    stanza-create 2>"${_stderr_file}" || _exit_code=$?
+                    stanza-create >"${_stderr_file}" 2>&1 || _exit_code=$?
+
+                # Forward pgbackrest's per-attempt output to the init log so
+                # operators still see INFO/ERROR detail. See pgbackrest-cron
+                # run_backup for the same fix and rationale.
+                cat "${_stderr_file}" || true
 
                 if [ "${_exit_code}" -eq 0 ]; then
                     bashio::log.info "pgBackRest: stanza-create OK (attempt ${_attempt})"
@@ -392,7 +401,8 @@ if bashio::config.true 'backup_enabled'; then
                 if [ "${_classification}" = "non-transient" ]; then
                     notify_supervisor \
                         "pgBackRest stanza-create failed (non-transient)" \
-                        "Exit ${_exit_code}. Last error: ${_stderr_tail}. Fix secrets/SSH key/host and restart."
+                        "Exit ${_exit_code}. Last error: ${_stderr_tail}. Fix secrets/SSH key/host and restart." \
+                        "pgbackrest-stanza-create-failed"
                     bashio::log.error "pgBackRest: non-transient error (exit ${_exit_code}) — not retrying"
                     break
                 fi
@@ -400,7 +410,8 @@ if bashio::config.true 'backup_enabled'; then
                 if [ "${_attempt}" -eq 3 ]; then
                     notify_supervisor \
                         "pgBackRest stanza-create failed (retries exhausted)" \
-                        "Exit ${_exit_code} after 3 attempts. Last error: ${_stderr_tail}. Fix connectivity and restart."
+                        "Exit ${_exit_code} after 3 attempts. Last error: ${_stderr_tail}. Fix connectivity and restart." \
+                        "pgbackrest-stanza-create-failed"
                     bashio::log.error "pgBackRest: stanza-create failed after 3 attempts (exit ${_exit_code})"
                 else
                     bashio::log.warning "pgBackRest: transient error (exit ${_exit_code}), retrying..."
