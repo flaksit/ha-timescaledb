@@ -96,7 +96,18 @@ classify_pgbackrest_error() {
     esac
 
     if [ -f "${stderr_file}" ]; then
-        stderr_content=$(tail -c 4096 "${stderr_file}" 2>/dev/null || true)
+        # Only consider pgbackrest's ERROR/WARN/HINT-prefixed lines for
+        # classification. pgbackrest's "backup command begin" INFO line echoes
+        # the full command line including option NAMES like --repo1-cipher-pass
+        # and --repo1-cipher-type; matching the non-transient regex against
+        # those names would tag every failure (even transient SFTP hiccups) as
+        # non-transient because "cipher" appears in the option names. The real
+        # error context lives in the ERROR (and occasionally WARN/HINT) lines
+        # that come after, where regex matches actually identify the failure
+        # mode. Pattern matches pgbackrest's log prefix
+        #   "YYYY-MM-DD HH:MM:SS.SSS PNN  ERROR/WARN/HINT: ..."
+        stderr_content=$(grep -E ' P[0-9]+ +(ERROR|WARN|HINT)' "${stderr_file}" 2>/dev/null \
+            | tail -c 4096 || true)
     fi
 
     # Explicit non-transient patterns: auth / key / cipher problems that clearly
