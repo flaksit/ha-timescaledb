@@ -18,6 +18,13 @@ PGBACKREST_CONF_PATH=""           # --pgbackrest-conf: local pgbackrest.conf to 
 DOCKER_IMAGE="timescale/timescaledb:latest-pg18"
 CONTAINER_NAME="pgbackrest-verify-$$"   # unique name per run; cleaned up on EXIT
 KEEP=0                            # --keep: skip container teardown + leave PG running for inspection
+# Default ties to the addon's archive_timeout_seconds default (3600 — see
+# timescaledb/config.yaml). The 300s slack covers verify-container startup,
+# pgbackrest install, restore, PG start, and the final archive-get round trips
+# observed in practice. Override with --max-recovery-lag when the live cluster
+# runs a non-default archive_timeout.
+MAX_RECOVERY_LAG=3900             # --max-recovery-lag: seconds, repo1 PITR lag ceiling
+RECOVERY_WAIT_TIMEOUT=300         # --recovery-wait-timeout: seconds, max to wait for pg_is_in_recovery()=false
 
 # ────────────────────────────────────────────────────────────────────────────
 # Usage
@@ -40,6 +47,12 @@ Options:
   --keep                   After a successful verify, leave the verify container + PostgreSQL
                            running so the restored database can be inspected interactively.
                            Prints connection and cleanup commands. Default: tear everything down.
+  --max-recovery-lag <s>   For --repo=1 only: max allowed seconds between live max(last_updated)
+                           and restored max(last_updated). Proves WAL replay reached near-current.
+                           Default: 3900 (PG archive_timeout default 3600 + 300 script overhead).
+  --recovery-wait-timeout <s>
+                           For --repo=1 only: max seconds to wait for pg_is_in_recovery() to
+                           flip to false after PG accepts connections. Default: 300.
   -h, --help               Show this message and exit
 EOF
 }
@@ -56,6 +69,8 @@ while [[ $# -gt 0 ]]; do
     --pass-path)          PASS_PREFIX="$2"; shift 2 ;;
     --pgbackrest-conf)    PGBACKREST_CONF_PATH="$2"; shift 2 ;;
     --keep)               KEEP=1; shift ;;
+    --max-recovery-lag)   MAX_RECOVERY_LAG="$2"; shift 2 ;;
+    --recovery-wait-timeout) RECOVERY_WAIT_TIMEOUT="$2"; shift 2 ;;
     -h|--help)            usage; exit 0 ;;
     *)                    echo "Unknown flag: $1"; usage; exit 1 ;;
   esac
@@ -64,6 +79,18 @@ done
 # Validate repo value
 if [[ "$REPO" != "1" && "$REPO" != "2" ]]; then
   echo "ERROR: --repo must be 1 or 2 (got: ${REPO})"
+  exit 1
+fi
+
+# Validate recovery-lag threshold
+if ! [[ "$MAX_RECOVERY_LAG" =~ ^[0-9]+$ ]] || [[ "$MAX_RECOVERY_LAG" -lt 1 ]]; then
+  echo "ERROR: --max-recovery-lag must be a positive integer (got: ${MAX_RECOVERY_LAG})"
+  exit 1
+fi
+
+# Validate recovery-wait timeout
+if ! [[ "$RECOVERY_WAIT_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$RECOVERY_WAIT_TIMEOUT" -lt 1 ]]; then
+  echo "ERROR: --recovery-wait-timeout must be a positive integer (got: ${RECOVERY_WAIT_TIMEOUT})"
   exit 1
 fi
 
@@ -79,7 +106,18 @@ fi
 # but the container is only force-removed when KEEP=0 or the run failed.
 # ────────────────────────────────────────────────────────────────────────────
 TMPDIR_SECRETS=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_SECRETS"; docker rm -fv "$CONTAINER_NAME" 2>/dev/null || true' EXIT
+_cleanup_on_exit() {
+  # Always remove secret temp dirs (must not leak SSH keys, cipher passes).
+  rm -rf "$TMPDIR_SECRETS"
+  # On --keep, leave the verify container in place even when the script aborted
+  # early (e.g. pg_ctl timeout, set -e abort), so the operator can inspect
+  # /tmp/pg.log, /tmp/pgbackrest-logs/, /restore/pgdata, and the partial state.
+  # Without --keep, full teardown.
+  if [[ "${KEEP:-0}" -ne 1 ]]; then
+    docker rm -fv "$CONTAINER_NAME" 2>/dev/null || true
+  fi
+}
+trap '_cleanup_on_exit' EXIT
 
 # ────────────────────────────────────────────────────────────────────────────
 # Resolve live container name (skip if offline mode is active)
@@ -260,6 +298,16 @@ docker cp "${TMPDIR_SECRETS}/id_ed25519"  "${CONTAINER_NAME}:/secrets/id_ed25519
 docker cp "${TMPDIR_SECRETS}/known_hosts" "${CONTAINER_NAME}:/secrets/known_hosts"
 docker exec "${CONTAINER_NAME}" chmod 0600 /secrets/id_ed25519
 docker exec "${CONTAINER_NAME}" chmod 0644 /secrets/known_hosts
+# WHY chown to postgres (uid 70 on Alpine): pgbackrest archive-get is spawned by
+# the PostgreSQL backend during WAL replay (postgresql.auto.conf's restore_command),
+# so it runs as the postgres user — not as root like the initial restore command.
+# Without this, docker cp lands files as the host invoker's uid (often 1000:1000)
+# and the postgres process gets EACCES on the key file. The failure mode is silent:
+# libssh2 reports "public key authentication failed [-16]" and PG falls through to
+# "consistent recovery state reached" using only the WAL embedded in the backup,
+# producing a green PASS that masks a broken WAL-replay path. Aligns with the
+# pgbackrest.conf comment "pgbackrest opens them directly as postgres UID".
+docker exec "${CONTAINER_NAME}" chown 70:70 /secrets/id_ed25519 /secrets/known_hosts
 
 # ────────────────────────────────────────────────────────────────────────────
 # Install pgBackRest inside the verify container
@@ -359,6 +407,23 @@ docker exec "${CONTAINER_NAME}" bash -c \
      echo 'log-path=/tmp/pgbackrest-logs' >> /etc/pgbackrest/pgbackrest.conf; \
    fi"
 
+# Enable file logging for archive-get in the verify container.
+#
+# WHY: PG-spawned archive-get only writes its INFO/ERROR lines to PG's stderr
+# (which gets interleaved into the script's console). If a single archive-get
+# fails (e.g. transient libssh2 / Hetzner SFTP error), PG treats exit code 1
+# as "no more WAL" and promotes immediately — without making the underlying
+# error easy to find in the console flood. log-level-file=detail captures
+# every archive-get attempt to /tmp/pgbackrest-logs/<stanza>-archive-get.log
+# inside the verify container, so post-mortem inspection (--keep) can pinpoint
+# which segment failed and why.
+docker exec "${CONTAINER_NAME}" bash -c \
+  "sed -i 's|^log-level-file=.*|log-level-file=detail|' /etc/pgbackrest/pgbackrest.conf; \
+   if ! grep -q '^log-level-file=' /etc/pgbackrest/pgbackrest.conf; then \
+     echo 'log-level-file=detail' >> /etc/pgbackrest/pgbackrest.conf; \
+   fi; \
+   chown postgres:postgres /tmp/pgbackrest-logs"
+
 # ────────────────────────────────────────────────────────────────────────────
 # Fetch backup info BEFORE restore to get the backup stop timestamp
 #
@@ -414,7 +479,86 @@ docker exec \
   "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
   pgbackrest --stanza=timescaledb "--repo=${REPO}" \
-    restore --pg1-path=/restore/pgdata --delta "${_RESTORE_TYPE_FLAGS[@]}"
+    restore --pg1-path=/restore/pgdata "${_RESTORE_TYPE_FLAGS[@]}"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Install a retry wrapper around pgbackrest archive-get and rewrite the
+# restored cluster's restore_command to use it (repo1 only).
+#
+# PROBLEM: PostgreSQL's restore_command contract is binary — exit 0 means
+# "segment delivered (or unambiguously absent, with no file written)", any
+# non-zero exit means "I have no idea what's going on, treat as end of
+# archive and promote". pgbackrest has no internal retry on transient SSH /
+# libssh2 / Hetzner storage-box hiccups: one connection blip → exit 1 → PG
+# promotes prematurely at the last successfully replayed segment, leaving
+# the restored cluster minutes-to-hours behind even when later WAL is
+# perfectly available in the archive.
+#
+# OBSERVED: in a verify-restore run with E7-F5 all present in repo1's
+# archive, recovery stopped at LSN 29/F0FFF428 (mid-segment F0). F1-F5 were
+# fetchable manually 30s later. The diagnostic signal — which segment
+# failed and why — was lost because PG's restore_command stderr is no
+# longer attached to docker exec after pg_ctl returns, and pgbackrest
+# archive-get does not write its own log file in that invocation.
+#
+# FIX: shim restore_command with a tiny shell wrapper that retries 5 times
+# (linear backoff 3/6/9/12/15s = 45s worst case) on non-zero exit before
+# truly giving up. pgbackrest returns exit 0 for the "segment legitimately
+# not in archive" case (writing nothing to %p), so the wrapper does not
+# interfere with end-of-archive detection — only with transient failures.
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "${REPO}" == "1" ]]; then
+  echo "==> Installing archive-get retry wrapper and rewriting restore_command ..."
+  docker exec -i "${CONTAINER_NAME}" tee /usr/local/bin/pgbackrest-archive-get-retry >/dev/null <<'WRAPPER'
+#!/bin/sh
+# Retry pgbackrest archive-get on transient errors (libssh2, Hetzner SFTP).
+#
+# pgbackrest archive-get exit codes:
+#   0     = WAL segment fetched into %p
+#   1     = WAL segment legitimately not in the archive (end of archive,
+#           timeline-history probe). PG interprets exit 1 as "no more WAL"
+#           and promotes — exactly what we want for this case.
+#   other = real error (SSH/libssh2, repo unreachable, decryption, etc).
+#           PG also treats this as "promote", but here a transient blip
+#           causes premature promotion. Retry these.
+#
+# Without this wrapper, a single transient SSH error during recovery
+# promotes the restored cluster minutes-to-hours behind live, making the
+# recovery-lag check fail. Observed at least once on Hetzner storage-box
+# SFTP: F1 fetch transient-failed, recovery promoted at F0, restored
+# max(last_updated) ended up 2h+ behind live.
+seg="$1"; dst="$2"
+log=/tmp/pgbackrest-logs/archive-get-retry.log
+mkdir -p "$(dirname "$log")" 2>/dev/null
+for attempt in 1 2 3 4 5; do
+  pgbackrest --pg1-path=/restore/pgdata --repo=1 --stanza=timescaledb \
+    archive-get "$seg" "$dst"
+  rc=$?
+  case "$rc" in
+    0)
+      [ "$attempt" -gt 1 ] && echo "$(date -Iseconds) seg=$seg attempt=$attempt OK after retry" >> "$log"
+      exit 0
+      ;;
+    1)
+      # Legitimately missing — let PG handle (it will promote if appropriate).
+      # Log only on first attempt to keep the log compact.
+      [ "$attempt" -eq 1 ] && echo "$(date -Iseconds) seg=$seg rc=1 (not in archive) — passing through" >> "$log"
+      exit 1
+      ;;
+    *)
+      echo "$(date -Iseconds) seg=$seg attempt=$attempt rc=$rc — retrying" >> "$log"
+      sleep "$(( attempt * 3 ))"
+      ;;
+  esac
+done
+echo "$(date -Iseconds) seg=$seg gave up after 5 attempts" >> "$log"
+exit 1
+WRAPPER
+  docker exec "${CONTAINER_NAME}" chmod 0755 /usr/local/bin/pgbackrest-archive-get-retry
+  docker exec "${CONTAINER_NAME}" sed -i \
+    "s|^restore_command = .*|restore_command = '/usr/local/bin/pgbackrest-archive-get-retry %f \"%p\"'|" \
+    /restore/pgdata/postgresql.auto.conf
+fi
 
 # ────────────────────────────────────────────────────────────────────────────
 # Start PostgreSQL explicitly after restore completes
@@ -422,17 +566,69 @@ docker exec \
 # WHY explicit start: the container was started with 'sleep infinity' as entrypoint
 # so PostgreSQL did not auto-start. PG must not be running during restore (it writes
 # to PGDATA). Now that restore is complete, start it explicitly.
+#
+# WHY -l /tmp/pg.log: pg_ctl detaches from this shell after the daemon reaches
+# "ready to accept connections"; without -l, postgres's stderr — including all
+# restore_command output during ongoing archive recovery — is lost. Routing it
+# to a file makes the per-segment archive-get trace inspectable after the run
+# (especially under --keep).
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Starting PostgreSQL in verify container ..."
 docker exec "${CONTAINER_NAME}" bash -c \
   "chown -R postgres:postgres /restore/pgdata && \
-   gosu postgres pg_ctl start -D /restore/pgdata -o '-k /tmp --port=5433' -w -t 60"
+   gosu postgres pg_ctl start -D /restore/pgdata -o '-k /tmp --port=5433' -w -t 180 -l /tmp/pg.log"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Verify step 1 — Primary freshness check: pgBackRest backup stop timestamp
+# Wait for archive recovery to complete (repo1 only)
+#
+# WHY: `pg_ctl start -w` returns when PG is "ready to accept connections", which
+# happens at the "consistent recovery state reached" point — i.e. as soon as
+# the base backup is consistent. Archive recovery (replaying WAL segments via
+# restore_command -> pgbackrest archive-get) continues in the background after
+# that. Querying max(last_updated) before recovery finishes produces a value
+# frozen at backup-stop time even though replay is actively catching up,
+# yielding a false-FAIL on the recovery-lag check.
+#
+# `pg_is_in_recovery()` returns true while WAL is still being replayed and
+# flips to false once PG exhausts the archive and promotes to read-write.
+# That promotion happens when archive-get returns an error for the next WAL
+# segment (signal: no more segments available).
+#
+# Timeout: archive_timeout default 3600s means the live cluster only forces a
+# WAL switch hourly. The most recent segment may genuinely not be archived yet.
+# 300s of WAL fetching + promote is generous; on slow networks or large diffs,
+# bump via --recovery-wait-timeout.
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "${REPO}" == "1" ]]; then
+  echo "==> Waiting for archive recovery to complete (pg_is_in_recovery() -> false) ..."
+  _rec_deadline=$(( SECONDS + RECOVERY_WAIT_TIMEOUT ))
+  _rec_done=false
+  while (( SECONDS < _rec_deadline )); do
+    _in_rec=$(docker exec "${CONTAINER_NAME}" bash -c \
+      "gosu postgres psql -h /tmp -p 5433 -U postgres -d homeassistant -tAc \
+      'SELECT pg_is_in_recovery()'" 2>/dev/null || echo "")
+    if [[ "${_in_rec}" == "f" ]]; then
+      _rec_done=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${_rec_done}" != "true" ]]; then
+    echo "WARN: archive recovery did not finish within ${RECOVERY_WAIT_TIMEOUT}s — proceeding anyway"
+    echo "      (lag check will likely FAIL; see --recovery-wait-timeout)"
+  else
+    echo "Archive recovery complete; cluster promoted to read-write."
+  fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# Verify step 1 — Backup file age: pgBackRest backup stop timestamp must be
+# within the daily-backup window (proves the scheduled backup ran recently),
+# NOT a recovery-quality signal — that is the recovery-lag check below.
 # ────────────────────────────────────────────────────────────────────────────
 _freshness_ok=true
 _rowcount_ok=true
+_lag_ok=true
 
 _now=$(date +%s)
 if [[ "$REPO" == "1" ]]; then
@@ -451,7 +647,7 @@ if [[ "$_backup_stop" == "0" ]]; then
   echo "FAIL: no backup found for repo${REPO} (stanza empty or not initialized)"
   _freshness_ok=false
 elif [[ "$_backup_stop" -gt "$(( _now - _max_age ))" ]]; then
-  echo "PASS: backup freshness check (stop_time within allowed window for repo${REPO})"
+  echo "PASS: backup file age (stop_time within allowed window for repo${REPO})"
 else
   echo "FAIL: backup stop_time is ${_age}s ago, exceeds ${_max_age}s limit for repo${REPO}"
   _freshness_ok=false
@@ -477,7 +673,59 @@ _restored_max=$(docker exec "${CONTAINER_NAME}" bash -c \
 echo "Restored DB max(last_updated): ${_restored_max}"
 
 # ────────────────────────────────────────────────────────────────────────────
-# Verify step 3 — Exact row count match (requires live Pi via ssh)
+# Verify step 3 — Recovery lag (repo1 only): proves WAL replay actually ran
+#
+# WHY this exists separately from the row-count check: the row-count comparison
+# below filters the live DB with last_updated <= restored_max, which makes the
+# match trivially true even when restored_max sits at the backup-stop timestamp
+# (i.e. when archive-get failed and no WAL got replayed). A real DR exercise
+# must end with the restored cluster catching up close to "now", not just being
+# internally consistent at backup time. This step is the only gate that
+# distinguishes "WAL replay path works" from "WAL replay path silently broken".
+#
+# WHY repo1 only: repo2 is restored with --type=immediate (annual fulls, no WAL
+# archive of its own), so restored_max will sit at or near the most recent yearly
+# backup — possibly months behind live. That is correct for a yearly-archive
+# repo and not a failure of WAL replay.
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$REPO" == "1" && -n "${CONTAINER}" ]]; then
+  echo "==> Checking recovery lag (restored vs live max(last_updated)) ..."
+  _live_max_unfiltered=$(ssh "$HA_SSH" "docker exec ${CONTAINER} psql -h /tmp -U postgres \
+    -d homeassistant -tAc 'SELECT max(last_updated) FROM states'" 2>/dev/null || echo "")
+  if [[ -z "$_live_max_unfiltered" || "$_restored_max" == "NULL" || -z "$_restored_max" ]]; then
+    echo "FAIL: cannot compute recovery lag"
+    echo "  live max(last_updated):     '${_live_max_unfiltered}'"
+    echo "  restored max(last_updated): '${_restored_max}'"
+    _lag_ok=false
+  else
+    _live_epoch=$(date -d "$_live_max_unfiltered" +%s 2>/dev/null || echo "")
+    _restored_epoch=$(date -d "$_restored_max" +%s 2>/dev/null || echo "")
+    if [[ -z "$_live_epoch" || -z "$_restored_epoch" ]]; then
+      echo "FAIL: could not parse timestamps for lag calculation"
+      echo "  live='${_live_max_unfiltered}' restored='${_restored_max}'"
+      _lag_ok=false
+    else
+      _lag=$(( _live_epoch - _restored_epoch ))
+      echo "Recovery lag: ${_lag}s (live=${_live_max_unfiltered}, restored=${_restored_max}, threshold=${MAX_RECOVERY_LAG}s)"
+      if [[ "$_lag" -le "$MAX_RECOVERY_LAG" ]]; then
+        echo "PASS: recovery lag within threshold — WAL replay reached near-current state"
+      else
+        echo "FAIL: recovery lag ${_lag}s exceeds ${MAX_RECOVERY_LAG}s"
+        echo "  HINT: archive-get likely failed during PG startup, so recovery stopped at"
+        echo "        the backup stop point instead of catching up via WAL replay."
+        echo "        Check the restore output above for libssh2 / 'unable to find a valid"
+        echo "        repository' errors. Common cause: /secrets/* not readable by the"
+        echo "        postgres uid inside the verify container."
+        _lag_ok=false
+      fi
+    fi
+  fi
+elif [[ "$REPO" == "2" ]]; then
+  echo "INFO: skipping recovery-lag check for repo2 (yearly archival, --type=immediate, no WAL replay expected)"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# Verify step 4 — Exact row count match (requires live Pi via ssh)
 # Skipped in offline mode (when live container is unavailable).
 #
 # WHY explicit empty-result fail: $(docker exec ... psql ...) captures stdout
@@ -538,18 +786,25 @@ fi
 
 echo ""
 echo "==> Verify complete"
-if [[ "${_freshness_ok}" == "false" || "${_rowcount_ok}" == "false" ]]; then
+_result_failed=false
+if [[ "${_freshness_ok}" == "false" || "${_rowcount_ok}" == "false" || "${_lag_ok}" == "false" ]]; then
   echo "RESULT: FAILED"
-  exit 1
+  _result_failed=true
 else
   echo "RESULT: PASSED"
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# --keep post-success: disarm trap, leave container + PG running, print hints
+# --keep post-run (success OR failure): disarm trap, leave container + PG
+# running so the operator can inspect /tmp/pgbackrest-logs, /restore/pgdata,
+# and the running DB.
 #
-# Only reached on a successful run because the FAIL branch above calls exit 1
-# and the trap fires the full teardown. Secrets temp dirs are still removed.
+# WHY also on failure: archive-get failures during WAL replay are the most
+# common cause of a FAILED verdict. The diagnostic data (per-segment archive-get
+# log lines, restored pg_wal/ contents, postgresql.auto.conf recovery options)
+# only exists inside the verify container — tearing it down on FAIL leaves the
+# operator nothing to debug from. Without --keep the default trap still tears
+# the container down on FAIL, so this only affects explicit-keep runs.
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "${KEEP}" -eq 1 ]]; then
   rm -rf "$TMPDIR_SECRETS"
@@ -628,4 +883,10 @@ EOF
   if [[ "${_tcp_ok}" == "false" ]]; then
     echo "WARNING: TCP listener could not be enabled — only docker-exec psql will work."
   fi
+fi
+
+# Final exit code reflects the verdict regardless of --keep, so callers (CI,
+# wrappers) still see FAIL=1 / PASS=0 when --keep leaves the container behind.
+if [[ "${_result_failed}" == "true" ]]; then
+  exit 1
 fi
