@@ -2,7 +2,7 @@
 
 Restore a pgBackRest backup to a throwaway Docker container and verify the backup is valid and
 row counts match the live TimescaleDB instance. Used for periodic disaster-recovery validation
-and the BKUP-14 "restore to new instance" scenario (e.g. restoring to a laptop or cloud server
+and the "restore to new instance" scenario (e.g. restoring to a laptop or cloud server
 without access to the live Pi).
 
 The script pulls secrets from the HAOS host over SSH, starts a disposable container, restores
@@ -88,7 +88,7 @@ Thresholds:
 
 | Repo | Schedule | Max age |
 |------|----------|---------|
-| repo1 | Daily (BKUP-06) | 25 hours (90 000 s) |
+| repo1 | Daily | 25 hours (90 000 s) |
 | repo2 | Annual (Jan 1) | 1 year (31 536 000 s) |
 
 ### Secondary: Row count exact match

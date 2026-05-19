@@ -163,7 +163,7 @@ The app integrates [pgBackRest](https://pgbackrest.org/) to ship encrypted, dedu
 
 ### Prerequisites
 
-- **Two SFTP destinations** with separate credentials. The recommended setup is two Hetzner Storage Box sub-accounts — see [BKUP-13 below](#backup-setup-bkup-13). Any SFTP server that allows writing to the chroot root (`/`) works.
+- **Two SFTP destinations** with separate credentials. The recommended setup is two Hetzner Storage Box sub-accounts — see [Backup Setup below](#backup-setup). Any SFTP server that allows writing to the chroot root (`/`) works.
 - **MQTT broker + integration** (optional but recommended). Backup status sensors (`sensor.timescaledb_backup_*`) are published via MQTT discovery through the Supervisor's `mqtt/publish` service. Without MQTT the backups still run, but the four status sensors will not appear in Home Assistant. To enable:
     1. Install the **Mosquitto broker** app from the official add-on store.
     2. Configure the **MQTT integration** in Home Assistant (Settings → Devices & Services → Add Integration → MQTT). Mosquitto's discovery flow handles this automatically on most installs.
@@ -196,7 +196,7 @@ else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
 
 **Sub-account chroots at path `/` avoid the trigger** because pgBackRest creates `/archive` and `/backup` directly inside the sub-account's writable chroot — the very first `mkdir` succeeds (no walk-up needed). Main accounts on Hetzner Storage Box exhibit the trigger because Hetzner returns `NO_SUCH_FILE` for the chained walk-up to `/`.
 
-### Backup Setup (BKUP-13)
+### Backup Setup
 
 #### Step 1. Create two sub-accounts in Hetzner Cloud Console
 
@@ -366,7 +366,7 @@ ssh ha "docker exec <container> gosu postgres \
   pgbackrest --stanza=timescaledb check"
 ```
 
-Expected behavior: repo1 WAL archive check passes with "WAL segment ... successfully archived to repo1". The command will report a timeout error for repo2 and exit non-zero (exit code 82) — this is expected. By design (D-22), the WAL archive stream is scoped to repo1 only; repo2 receives no continuous WAL. The check command cannot be scoped to a single repo, so the repo2 timeout is unavoidable and is not a malfunction.
+Expected behavior: repo1 WAL archive check passes with "WAL segment ... successfully archived to repo1". The command will report a timeout error for repo2 and exit non-zero (exit code 82) — this is expected. The WAL archive stream is scoped to repo1 only by design; repo2 receives no continuous WAL (it holds yearly fulls only). The check command cannot be scoped to a single repo, so the repo2 timeout is unavoidable and is not a malfunction.
 
 #### Step 7. Store all four secrets in your password manager
 
@@ -393,12 +393,11 @@ ssh ha "cat $SECRETS/pgbackrest_id_ed25519_repo2"
 
 The cipher passphrases are immutable. After stanza-create, the app never regenerates them. Permanent loss of a passphrase means permanent loss of access to that repo's backups.
 
-#### Phase 9: automated cron and observability sensors
+#### Automated cron and observability sensors
 
-If you are running Phase 9 or later, the `pgbackrest-cron` s6 longrun service starts
-automatically with the app — no manual cron entry or scheduler configuration is needed.
-Backups run daily at 02:00 UTC according to the schedule in
-[What Phase 9 adds](#what-phase-9-adds).
+The `pgbackrest-cron` s6 longrun service starts automatically with the app — no manual
+cron entry or scheduler configuration is needed. Backups run daily at 02:00 UTC according
+to the schedule in [Automated cron and observability](#automated-cron-and-observability).
 
 After each successful backup, four Home Assistant sensors are updated:
 
@@ -451,7 +450,7 @@ The `pgbackrest_known_hosts_repo*` file does not contain a key for the host pgBa
 **Symptom: cipher passphrase lost after `/data/secrets/` was wiped.**
 Existing backups are unrecoverable. The cipher passphrases are generated once on first stanza-create and never written elsewhere. Always copy `/data/secrets/pgbackrest_cipher_pass_repo[12]` to an out-of-band location after first start.
 
-### Backup command reference (BKUP-14)
+### Backup command reference
 
 All commands run as the `postgres` user inside the app container. Resolve the container name at runtime:
 
@@ -472,14 +471,14 @@ This is a documented scoped exception to the standard secret-injection guideline
 | Command | Repo | Purpose | Notes |
 |---------|------|---------|-------|
 | `pgbackrest --stanza=timescaledb info --output=json` | both | List backups and WAL ranges for all repos | Use `-o json` for machine parsing |
-| `pgbackrest --stanza=timescaledb check` | both | Force WAL switch and verify WAL segment reaches repo1 | Exits 82 by design: repo2 receives no streaming WAL (D-22); repo1 check line must show "successfully archived" |
-| `pgbackrest --stanza=timescaledb --repo=1 backup --type=full` | repo1 | Full backup to repo1 | Triggered automatically by Phase 9 cron on monthly schedule |
+| `pgbackrest --stanza=timescaledb check` | both | Force WAL switch and verify WAL segment reaches repo1 | Exits 82 by design: repo2 receives no streaming WAL; repo1 check line must show "successfully archived" |
+| `pgbackrest --stanza=timescaledb --repo=1 backup --type=full` | repo1 | Full backup to repo1 | Run automatically by the cron service on a monthly schedule |
 | `pgbackrest --stanza=timescaledb --repo=1 backup --type=diff` | repo1 | Differential backup to repo1 | Since last full; smaller than full |
 | `pgbackrest --stanza=timescaledb --repo=1 backup --type=incr` | repo1 | Incremental backup to repo1 | Since last backup of any type; smallest |
 | `pgbackrest --stanza=timescaledb --repo=2 backup --type=full --no-archive-check` | repo2 | Annual archival full backup to repo2 | `--no-archive-check` required: repo2 has no streaming WAL by design; without the flag pgBackRest times out waiting for a WAL segment to appear in repo2 (exit 82) |
 | `pgbackrest --stanza=timescaledb --repo=2 verify` | repo2 | Validate repo2 backup manifests and file checksums | `verify --no-pitr` is not valid in pgBackRest 2.58.0 (exit 31 "invalid option"). Run without it; behavior is equivalent since repo2 has no WAL archive stream to verify for PITR. |
 | `pgbackrest --stanza=timescaledb --repo=1 restore --pg1-path=/data/restore-test/pgdata --delta` | repo1 | Restore latest backup to a scratch directory for drill | Does not affect live PGDATA; `--delta` is downgraded to full-copy automatically if the target directory is empty |
-| `/usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata` | — | Validate block checksums in a restored PGDATA | Must be preceded by `pg_resetwal -f /data/restore-test/pgdata` (see Phase 8 drill below) |
+| `/usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata` | — | Validate block checksums in a restored PGDATA | Must be preceded by `pg_resetwal -f /data/restore-test/pgdata` (see drill commands below) |
 
 #### Restore to a new instance
 
@@ -512,16 +511,16 @@ pgbackrest.conf and `--pass-path` to pull secrets from your password manager:
 ```
 
 To restore to a fresh Pi (disaster recovery), follow the
-[DR runbook](#disaster-recovery-runbook-bkup-12) instead — that procedure restores directly
+[DR runbook](#disaster-recovery-runbook) instead — that procedure restores directly
 to `/data/postgres` after staging secrets.
 
-### Phase 8 drill commands
+### Drill commands
 
-The following command sequences were executed on 2026-05-05 as the Phase 8 P1 gate (SC2, SC3, SC4). Run them quarterly to confirm both repos remain readable and restorable.
+Run these command sequences quarterly to confirm both repos remain readable and restorable.
 
 #### repo1 drill
 
-SC3 (restore) + SC4 (checksum verification). Runtime: ~3 min restore + <1 min checksums.
+Restore + checksum verification. Runtime: ~3 min restore + <1 min checksums.
 
 ```bash
 CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
@@ -568,7 +567,7 @@ Bad checksums:  0
 Data checksum version: 1
 ```
 
-Phase 8 observed result: 0 bad checksums across 1865 files / 316,233 blocks.
+Expected result: 0 bad checksums.
 
 Cleanup after drill:
 
@@ -580,7 +579,7 @@ Verify cleanup: `ssh ha "docker exec $CONTAINER test -d /data/restore-test"` sho
 
 #### repo2 drill
 
-SC2 (info + verify). Runtime: ~3 min. No data is downloaded — verify checks remote manifests and file checksums at source.
+Info + verify. Runtime: ~3 min. No data is downloaded — verify checks remote manifests and file checksums at source.
 
 ```bash
 CONTAINER=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
@@ -593,7 +592,7 @@ ssh ha "docker exec \
   pgbackrest --stanza=timescaledb info --output=json"
 ```
 
-Look for `"repo-key":2,"status":{"code":0,"message":"ok"}` and `"cipher":"aes-256-cbc"` in the output. Phase 8 confirmed: repo2 backup label `20260505-192628F`, 2.4 GB, status ok, cipher aes-256-cbc.
+Look for `"repo-key":2,"status":{"code":0,"message":"ok"}` and `"cipher":"aes-256-cbc"` in the output.
 
 ```bash
 # Verify backup manifests and file checksums at source
@@ -604,16 +603,16 @@ ssh ha "docker exec \
   pgbackrest --stanza=timescaledb --repo=2 verify"
 ```
 
-Expected last line: `verify command end: completed successfully`. Phase 8 observed: exit 0 in ~2.7 min.
+Expected last line: `verify command end: completed successfully` (exit 0, ~2.7 min).
 
 Note: `--no-pitr` is not a valid option for `pgbackrest verify` in pgBackRest 2.58.0 (exit 31). Run without it.
 
-The quarterly drill is manual in v1.1. Phase 10 (deferred) adds automated scheduling.
+The quarterly drill is manual; automated scheduling may come in a future release.
 
-### What Phase 9 adds
+### Automated cron and observability
 
-Phase 9 automates the backup schedule established in Phase 8 and adds observability through
-four Home Assistant sensors.
+The app automates the daily backup schedule and adds observability through four Home
+Assistant sensors.
 
 #### Automated backup schedule
 
@@ -649,11 +648,11 @@ These sensors persist across Home Assistant restarts. They are registered via MQ
 with retained messages — after a restart the sensors show as `unavailable` until the broker
 reconnects (typically seconds), then restore to their last known state. No action is required.
 
-### Disaster recovery runbook (BKUP-12)
+### Disaster recovery runbook
 
 This runbook covers the full path from a failed or replaced Raspberry Pi to a verified running
 database. Follow these steps in order. The runbook assumes all four secrets are in your password
-manager (the Phase 8 setup checkpoint confirmed this).
+manager — see [Backup Setup, Step 7](#step-7-store-all-four-secrets-in-your-password-manager).
 
 > **Warning:** If the Pi NVMe fails and the cipher passphrases were not copied to a password
 > manager, the affected repo's encrypted backup is permanently unrecoverable.
