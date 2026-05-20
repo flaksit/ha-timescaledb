@@ -316,6 +316,100 @@ update_ha_verify_sensor() {
     update_ha_sensor "sensor.timescaledb_backup_last_verify_${repo_id}" "${iso_timestamp}" '{}'
 }
 
+# Phase 10 BKUP-15 (D-04, D-06, D-07): notify operator when a weekly verify fails.
+# Fail-fast — no retry loop in run-verify.sh; the failure notification IS the signal.
+# Body schema (D-07): exit code, last 5 lines of stderr (already truncated by caller),
+# the literal manual-retry SSH command (operator substitutes their own container name
+# — the addon cannot detect the install-specific docker container name from inside
+# itself, hence the placeholder template), and a HAOS log pointer.
+#
+# Stable notification_id per repo so a repo that keeps failing produces one current
+# notification in the HA UI, not one per weekly run.
+#
+# Usage: notify_verify_failure <repo_id> <exit_code> <stderr_tail>
+notify_verify_failure() {
+    local repo_id="$1"
+    local exit_code="$2"
+    local stderr_tail="$3"
+
+    # Retry SSH command is a literal template — <container> is replaced by the
+    # operator. We do not try to resolve it at runtime (the addon has no view
+    # into HAOS's docker namespace from inside its own container).
+    local _retry_cmd="ssh ha 'docker exec <container> /usr/lib/timescaledb/run-verify.sh ${repo_id}'"
+
+    local _message
+    _message="pgBackRest verify ${repo_id} failed with exit code ${exit_code}.
+Last 5 lines of output:
+${stderr_tail}
+
+Manual retry: ${_retry_cmd}
+
+See: Settings > System > Logs > TimescaleDB"
+
+    notify_supervisor \
+        "pgBackRest ${repo_id} verify failed" \
+        "${_message}" \
+        "pgbackrest-verify-${repo_id}-failed"
+}
+
+# Phase 10 BKUP-16 (D-02, D-03): quarterly reminder for the manual deep restore drill.
+# Called from pgbackrest-cron's dispatch_for_date on Jan/Apr/Jul/Oct 1.
+#
+# WHY two channels (D-02): notify.notify reaches the operator's phone — visible even
+# when HA UI isn't open — while persistent_notification.create stays sticky in the HA
+# UI bell so the reminder doesn't vanish if the phone push is dismissed without action.
+# Both carry the canonical playbook URL on the ha-timescaledb GitHub main branch (D-03);
+# the playbook itself (QUARTERLY-DRILL.md) is committed to the public repo so the link
+# resolves for anyone running the addon — no install-specific values inline.
+#
+# Non-fatal contract: missing SUPERVISOR_TOKEN logs a warning and returns 0, mirroring
+# notify_supervisor / Phase 9 reporting (D-04). Failure of one channel does not abort
+# the other — both POSTs are attempted with their own || true guard.
+#
+# Usage: notify_quarterly_drill_due   (no args)
+notify_quarterly_drill_due() {
+    local _title="TimescaleDB quarterly restore drill due"
+    local _url="https://github.com/flaksit/ha-timescaledb/blob/main/scripts/verify-restore/QUARTERLY-DRILL.md"
+    local _message="It is time to run the manual quarterly deep restore drill. The weekly automated verify only proves manifest integrity; the quarterly drill exercises the full restore pipeline (cipher passphrase, SSH key, SFTP reachability, decryption, queryable restored database).
+
+Playbook: ${_url}
+
+Both pgBackRest repos. Sign-off log at the bottom of the playbook."
+
+    if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
+        bashio::log.warning "notify_quarterly_drill_due: SUPERVISOR_TOKEN unavailable — reminder not sent"
+        return 0
+    fi
+
+    # Channel 1: notify.notify — phone push.
+    local _push_payload
+    _push_payload=$(jq -nc --arg title "${_title}" --arg message "${_message}" \
+        '{title: $title, message: $message}')
+    curl -fsS --max-time 10 \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -d "${_push_payload}" \
+        http://supervisor/core/api/services/notify/notify 2>/dev/null \
+        || bashio::log.warning "notify_quarterly_drill_due: notify.notify call failed (push channel)"
+
+    # Channel 2: persistent_notification.create — sticky HA UI entry.
+    # Stable notification_id dedupes: repeated calls update the same entry rather
+    # than spawning duplicates if the operator hasn't dismissed the last one yet.
+    local _persist_payload
+    _persist_payload=$(jq -nc --arg title "${_title}" --arg message "${_message}" \
+        '{title: $title, message: $message, notification_id: "pgbackrest-quarterly-drill-due"}')
+    curl -fsS --max-time 10 \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -d "${_persist_payload}" \
+        http://supervisor/core/api/services/persistent_notification/create 2>/dev/null \
+        || bashio::log.warning "notify_quarterly_drill_due: persistent_notification.create call failed (HA UI channel)"
+
+    return 0
+}
+
 # -----------------------------------------------------------------------------
 # Dual-archive window helpers — used around the yearly repo2 backup so WAL
 # fans briefly to both repos. Without this window, the repo2 backup is not
