@@ -195,6 +195,12 @@ update_ha_sensor() {
     case "${_oid}" in
         timescaledb_backup_last_backup_*)
             _device_class="timestamp" ; _unit="" ; _state_class="" ;;
+        timescaledb_backup_last_verify_*)
+            # Phase 10 BKUP-15: per-repo verify success timestamp sensors. Same shape
+            # as last_backup_*: ISO-8601 UTC string, device_class=timestamp so HA
+            # renders relative-time and the staleness rule (>8 days = failure signal,
+            # CONTEXT.md D-05) is meaningful in dashboards.
+            _device_class="timestamp" ; _unit="" ; _state_class="" ;;
         timescaledb_backup_*_size)
             _device_class="data_size" ; _unit="B" ; _state_class="measurement" ;;
         *) _device_class="" ; _unit="" ; _state_class="" ;;
@@ -289,6 +295,25 @@ notify_backup_failure() {
         "pgBackRest ${repo_id} backup failed" \
         "${operation} failed after all retry attempts. Last error: ${stderr_tail}. Check the app log for full output." \
         "pgbackrest-backup-${repo_id}-failed"
+}
+
+# Phase 10 BKUP-15: publish a per-repo "last successful verify" timestamp sensor.
+# Same MQTT discovery + retained-state path as update_ha_sensor (which renders the
+# device-class branch added for timescaledb_backup_last_verify_*).
+#
+# CONTEXT.md D-05: success-only sensor — no outcome / exit_code / duration_seconds
+# attributes. The staleness window (sensor older than ~8 days) is itself the failure
+# signal in HA dashboards; the verify failure notification (notify_verify_failure) is
+# the complementary push channel.
+#
+# Usage: update_ha_verify_sensor <repo_id> <iso_timestamp>
+#   repo_id:       repo1 | repo2
+#   iso_timestamp: ISO-8601 UTC, e.g. 2026-05-20T02:00:00Z
+update_ha_verify_sensor() {
+    local repo_id="$1"
+    local iso_timestamp="$2"
+
+    update_ha_sensor "sensor.timescaledb_backup_last_verify_${repo_id}" "${iso_timestamp}" '{}'
 }
 
 # -----------------------------------------------------------------------------
