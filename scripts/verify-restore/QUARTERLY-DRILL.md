@@ -84,10 +84,3 @@ Triage path on failure:
 1. Re-read the script output and the addon log on the HAOS host (Settings → System → Logs → TimescaleDB).
 2. Fix the root cause and re-run the failing repo's drill.
 3. If the failure persists after a re-run, open a P1 issue in [`ha-timescaledb`](https://github.com/flaksit/ha-timescaledb/issues) and attach the full script output.
-
-## Sign-off log
-
-Record each drill below. Append a new row immediately after each quarterly run.
-
-| Quarter | Date run | Repo 1 result | Repo 2 result | Notes |
-|---------|----------|---------------|---------------|-------|
