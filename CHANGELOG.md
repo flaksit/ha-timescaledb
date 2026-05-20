@@ -6,6 +6,45 @@ All notable changes to this addon are documented here. Format loosely follows
 (`-phaseN.M`) mark in-flight development iterations and are not released to
 HACS.
 
+## [1.1.2] — 2026-05-21
+
+v1.1.x backup hardening release. Consolidates the three `-phase10.N` dev
+iterations into a single tagged release. End-user changes:
+
+### Added
+
+- **BKUP-15** — Weekly `pgbackrest verify` runs on both repos every Sunday at
+  02:00 UTC via the existing `pgbackrest-cron` longrun (one new branch in
+  `dispatch_for_date`, run after the daily backup so the freshest backup
+  gets its integrity signal earliest). Non-zero exit fires
+  `notify_verify_failure` once (no retry loop); the failure notification body
+  includes the exact `docker exec … run-verify.sh repoN` retry command and a
+  pointer to Settings → System → Logs → TimescaleDB.
+- **BKUP-16** — Quarterly drill reminder on Jan/Apr/Jul/Oct 1 at 02:00 UTC.
+  Fires both `notify.notify` (phone push) and `persistent_notification.create`
+  (sticky HA UI). Body links to the new playbook at
+  [`scripts/verify-restore/QUARTERLY-DRILL.md`](./scripts/verify-restore/QUARTERLY-DRILL.md).
+- Two new HA sensors grouped under the existing "TimescaleDB Backup" device:
+  `sensor.timescaledb_backup_last_verify_repo1` and `_repo2`. Success-only
+  ISO-8601 timestamps with `device_class: timestamp`; the staleness window
+  (>~8 days) is the failure signal in dashboards.
+- New executable `run-verify.sh` — single-code-path verify runner shared by
+  the Sunday cron branch and the operator's manual SSH retry.
+- New `backup-lib.sh` helpers: `update_ha_verify_sensor`,
+  `notify_verify_failure`, `notify_quarterly_drill_due`.
+- New playbook `scripts/verify-restore/QUARTERLY-DRILL.md` — manual deep
+  restore drill steps for both repos. Public-repo safe (no deployment-specific
+  values inline).
+
+### Notes
+
+- `pgbackrest verify` runs without `--no-pitr` (that flag is `restore`-only
+  in pgBackRest 2.58 — early planning artifacts incorrectly assumed it was
+  verify-compatible; see git history of run-verify.sh and the planning repo's
+  Phase 10 RESEARCH.md for the corrective trail).
+- This release matches what dev iterations `1.1.2-phase10.1` through
+  `1.1.2-phase10.3` had on `main`; the suffixed versions were never tagged.
+
 ## [1.1.2-phase10.3] — 2026-05-21
 
 Drop stale "Sign-off log at the bottom of the playbook." sentence from the
@@ -63,5 +102,5 @@ Phase 10 (v1.1.x backup hardening) — initial development iteration.
 
 See git history.
 
-[1.1.2-phase10.1]: https://github.com/flaksit/ha-timescaledb/tree/main
+[1.1.2]: https://github.com/flaksit/ha-timescaledb/releases/tag/v1.1.2
 [1.1.1]: https://github.com/flaksit/ha-timescaledb/releases/tag/v1.1.1
