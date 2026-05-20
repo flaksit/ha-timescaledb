@@ -14,7 +14,7 @@ The weekly automated `pgbackrest verify --no-pitr` only proves that manifest che
 
 - The cipher passphrase still decrypts the latest backup
 - The SSH private key still authenticates against the SFTP target
-- The SFTP host is reachable from the operator's workstation (the path used in a real disaster, when the Pi may be unavailable)
+- The SFTP host is reachable from the operator's workstation (the path used in a real disaster, when the HAOS host may be unavailable)
 - The decrypted, decompressed bytes can be replayed into a running PostgreSQL
 - The restored database is queryable and row counts match the live instance
 
@@ -23,7 +23,7 @@ The quarterly drill exercises the entire restore pipeline against both repos.
 ## Pre-requisites
 
 - Workstation with `docker` running
-- `ssh` access to the HAOS host (default alias: `ha`)
+- "Admin `ssh`" access to the HAOS host (port 22222) (default alias: `ha`)
 - `jq` (used by the verify script to parse `pgbackrest info --output=json`)
 - Password manager (e.g. `pass`) containing the per-repo cipher passphrases and SSH private keys, for the offline-fallback path
 - Local clone of this repository (the script lives at `scripts/verify-restore/verify-restore.sh` in `ha-timescaledb`)
@@ -39,13 +39,13 @@ The canonical invocation, run from this directory:
 ./verify-restore.sh --repo 2
 ```
 
-Defaults are sufficient when the Pi is online:
+Defaults are sufficient when the HAOS host is online:
 
 - `--ha-ssh ha` — SSH alias for the HAOS host
 - `--container` — auto-detected via `docker ps` on the HAOS host
 - Secrets are pulled live from the addon container at `/data/secrets/`
 
-If the Pi is offline, fall back to the password manager:
+If the HAOS host is offline, fall back to the `pass` password manager:
 
 ```bash
 ./verify-restore.sh --repo 1 \
@@ -81,7 +81,7 @@ The drill fails if any of the following occurs for either repo:
 
 Triage path on failure:
 
-1. Re-read the script output and the addon log on the Pi (Settings → System → Logs → TimescaleDB).
+1. Re-read the script output and the addon log on the HAOS host (Settings → System → Logs → TimescaleDB).
 2. Fix the root cause and re-run the failing repo's drill.
 3. If the failure persists after a re-run, open a P1 issue in [`ha-timescaledb`](https://github.com/flaksit/ha-timescaledb/issues) and attach the full script output.
 

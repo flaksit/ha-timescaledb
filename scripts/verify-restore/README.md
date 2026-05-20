@@ -3,7 +3,7 @@
 Restore a pgBackRest backup to a throwaway Docker container and verify the backup is valid and
 row counts match the live TimescaleDB instance. Used for periodic disaster-recovery validation
 and the "restore to new instance" scenario (e.g. restoring to a laptop or cloud server
-without access to the live Pi).
+without access to the live HAOS host).
 
 The script pulls secrets from the HAOS host over SSH, starts a disposable container, restores
 the latest backup from the chosen repo, starts PostgreSQL, and checks both backup freshness and
@@ -36,7 +36,7 @@ the live TimescaleDB instance for row count comparison. Run from the repo root o
 | `--repo <1\|2>` | `1` | pgBackRest repo to restore from. repo1 = rolling operational; repo2 = annual archival. |
 | `--secrets-dir <path>` | none | Path to a local directory containing pre-copied secret files (last resort, priority 3). |
 | `--pass-path <prefix>` | none | Pass store path prefix for offline secret retrieval (priority 2). e.g. `home-assistant/backups`. |
-| `--pgbackrest-conf <path>` | none | Path to a local `pgbackrest.conf` file. Use this when the live Pi or container is unavailable (offline DR scenario). Skips the `docker exec … cat /etc/pgbackrest/pgbackrest.conf` step. Obtain a reference copy from `timescaledb/DOCS.md` or a prior container snapshot. |
+| `--pgbackrest-conf <path>` | none | Path to a local `pgbackrest.conf` file. Use this when the live HAOS host or container is unavailable (offline DR scenario). Skips the `docker exec … cat /etc/pgbackrest/pgbackrest.conf` step. Obtain a reference copy from `timescaledb/DOCS.md` or a prior container snapshot. |
 | `--keep` | off | After a successful verify, leave the verify container and PostgreSQL running so the restored database can be inspected interactively. The script prints the exact `docker exec … psql` connection command and the `docker rm -f` cleanup command when it exits. On failure the container is still removed. |
 
 ## Credential acquisition
@@ -54,13 +54,13 @@ Secrets live inside the TimescaleDB addon container at `/data/secrets/`; that pa
 not visible on the HAOS host filesystem, so the script pipes `cat` output through
 `docker exec`. Requires SSH access to the HAOS host and a running container (auto-detected
 unless `--container` is supplied). No SCP needed — HAOS SSH does not support SCP. This is
-the default and works for routine drills when the Pi is online.
+the default and works for routine drills when the HAOS host is online.
 
 ### Priority 2: `pass` password store (offline fallback)
 
 Use `--pass-path <prefix>`. The script calls `pass show <prefix>/<filename>` for each secret.
 
-Use this when the Pi is offline (disaster scenario). The `pass` entry names must match the
+Use this when the HAOS host is offline (disaster scenario). The `pass` entry names must match the
 secret filenames: `pgbackrest_cipher_pass_repo1`, `pgbackrest_id_ed25519_repo1`,
 `pgbackrest_known_hosts_repo1` (and the `_repo2` variants for repo2).
 
@@ -93,17 +93,17 @@ Thresholds:
 
 ### Secondary: Row count exact match
 
-Requires live Pi access. The script queries `count(*), max(time), min(time)` from the
+Requires live HAOS host access. The script queries `count(*), max(time), min(time)` from the
 `states` table in the restored database, then queries the live TimescaleDB with a
 `WHERE time <= <restored_max_time>` filter to get a comparable slice. Results must match
-exactly. If the live Pi is offline (offline mode), this check is skipped with an `INFO`
+exactly. If the live HAOS host is offline (offline mode), this check is skipped with an `INFO`
 message.
 
 `max(time)` from the restored database is also logged separately as a data sanity indicator.
 
 ## Offline DR scenario
 
-When the Pi is unavailable, provide a local `pgbackrest.conf` and use the `pass` fallback:
+When the HAOS host is unavailable, provide a local `pgbackrest.conf` and use the `pass` fallback:
 
 ```bash
 ./verify-restore.sh --repo 1 \
