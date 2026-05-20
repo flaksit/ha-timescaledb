@@ -253,6 +253,41 @@ dispatch_for_date() {
         bashio::log.info "pgbackrest-cron: Jan 1 — dispatching repo2 annual full (dual-archive window)"
         do_yearly_repo2_backup
     fi
+
+    # Phase 10 BKUP-15: weekly verify (Sundays, both repos sequentially).
+    # WHY after the backup branches above:
+    #   1. Running verify AFTER the day's backup means the freshest backup gets
+    #      its integrity signal earliest. On the first Sunday of the month this
+    #      naturally serializes full+diff → verify; on Jan 1 it serializes
+    #      repo2 annual full → verify.
+    #   2. Serialization via the single 02:00 wake-up is free — verify cannot
+    #      overlap with the daily backup, which matters because both take the
+    #      pgBackRest exclusive stanza lock. A second longrun would need
+    #      explicit collision logic to achieve the same property (RESEARCH.md
+    #      §D-08 option 1).
+    #   3. '|| true' is deliberate: a verify failure already triggers its own HA
+    #      notification via notify_verify_failure inside run-verify.sh; we must
+    #      not skip the quarterly reminder branch below just because verify
+    #      failed (RESEARCH.md open issue #2). Per-repo verify runs are also
+    #      independent — a repo1 failure should not skip repo2.
+    if [ "${_dow}" -eq 7 ]; then
+        bashio::log.info "pgbackrest-cron: Sunday — dispatching weekly verify (repo1 then repo2)"
+        /usr/lib/timescaledb/run-verify.sh repo1 || true
+        /usr/lib/timescaledb/run-verify.sh repo2 || true
+    fi
+
+    # Phase 10 BKUP-16: quarterly drill reminder (Jan/Apr/Jul/Oct 1).
+    # Unconditional — fires regardless of backup or verify outcome so the
+    # operator is reminded to drill even when the day's backup itself failed
+    # (RESEARCH.md open issue #2 final paragraph).
+    case "${_month}" in
+        01|04|07|10)
+            if [ "${_day}" = "01" ]; then
+                bashio::log.info "pgbackrest-cron: quarterly drill reminder — firing notifications"
+                notify_quarterly_drill_due
+            fi
+            ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
