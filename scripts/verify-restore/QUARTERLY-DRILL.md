@@ -2,7 +2,7 @@
 
 This playbook walks the TimescaleDB addon operator through a manual deep restore drill, run on the operator's workstation. The drill is triggered by the quarterly Home Assistant notification (mobile push + sticky persistent notification) that the addon fires on Jan 1, Apr 1, Jul 1, and Oct 1.
 
-The weekly automated `pgbackrest verify --no-pitr` (also part of this addon) proves repository manifest integrity; this manual drill complements it by exercising the **full restore path** end-to-end — cipher passphrase, SSH key, SFTP reachability, byte-for-byte intact backup, and queryable restored database.
+The weekly automated `pgbackrest verify` (also part of this addon) proves repository manifest integrity; this manual drill complements it by exercising the **full restore path** end-to-end — cipher passphrase, SSH key, SFTP reachability, byte-for-byte intact backup, and queryable restored database.
 
 ## When
 
@@ -10,7 +10,7 @@ Run quarterly on receipt of the HA notification
 
 ## Why
 
-The weekly automated `pgbackrest verify --no-pitr` only proves that manifest checksums match what pgBackRest wrote to the SFTP repo. It does NOT prove that:
+The weekly automated `pgbackrest verify` only proves that manifest checksums match what pgBackRest wrote to the SFTP repo. It does NOT prove that:
 
 - The cipher passphrase still decrypts the latest backup
 - The SSH private key still authenticates against the SFTP target
