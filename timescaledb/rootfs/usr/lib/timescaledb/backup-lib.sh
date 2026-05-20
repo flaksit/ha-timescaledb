@@ -374,7 +374,7 @@ notify_quarterly_drill_due() {
 
 Playbook: ${_url}
 
-Both pgBackRest repos. Sign-off log at the bottom of the playbook."
+Run against both pgBackRest repos."
 
     if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
         bashio::log.warning "notify_quarterly_drill_due: SUPERVISOR_TOKEN unavailable — reminder not sent"

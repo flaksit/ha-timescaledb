@@ -6,6 +6,13 @@ All notable changes to this addon are documented here. Format loosely follows
 (`-phaseN.M`) mark in-flight development iterations and are not released to
 HACS.
 
+## [1.1.2-phase10.3] — 2026-05-21
+
+Drop stale "Sign-off log at the bottom of the playbook." sentence from the
+quarterly-drill reminder notification body. The sign-off log section was
+removed from `QUARTERLY-DRILL.md` (this is a public repo; git history is
+the sign-off log) and the notification no longer references it.
+
 ## [1.1.2-phase10.2] — 2026-05-20
 
 Phase 10 (v1.1.x backup hardening) — fix invalid `--no-pitr` flag on
