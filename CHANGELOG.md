@@ -6,13 +6,23 @@ All notable changes to this addon are documented here. Format loosely follows
 (`-phaseN.M`) mark in-flight development iterations and are not released to
 HACS.
 
+## [1.1.2-phase10.2] — 2026-05-20
+
+Phase 10 (v1.1.x backup hardening) — fix invalid `--no-pitr` flag on
+`pgbackrest verify`. The verify command does not accept `--no-pitr` (it is a
+restore-only option); `run-verify.sh` exited 31 ("invalid option") on every
+invocation, so the two new verify sensors never published their first
+discovery payload. Removed the flag; verify against repo1 now completes
+successfully in ~4.5 min. Documentation that previously cited
+`pgbackrest verify --no-pitr` was updated accordingly.
+
 ## [1.1.2-phase10.1] — 2026-05-20
 
 Phase 10 (v1.1.x backup hardening) — initial development iteration.
 
 ### Added
 
-- **BKUP-15** — Weekly `pgbackrest verify --no-pitr` on both repos via the
+- **BKUP-15** — Weekly `pgbackrest verify` on both repos via the
   existing `pgbackrest-cron` longrun. Sunday branch in `dispatch_for_date`
   runs `/usr/lib/timescaledb/run-verify.sh repo1` then `repo2`, sequentially,
   immediately after the daily backup. Fail-fast — non-zero exit fires

@@ -14,8 +14,11 @@
 # its INFO and ERROR lines to stdout via log-level-console=info; a stderr-only redirect
 # would yield an empty tail for the failure notification.
 # WHY tail -n 5: D-07 schema literally specifies "last 5 lines of stderr", not bytes.
-# WHY --no-pitr: repo2 has no continuous WAL archive (D-22a); repo1's full WAL coverage
-# check is expensive and adds nothing the daily archive-push didn't already prove.
+# WHY no --no-pitr flag: pgBackRest 2.58 verify does not accept --no-pitr (that flag is
+# restore-only). RESEARCH.md was incorrect on this point. Verify's manifest + archive
+# checksum validation does not require any flag to skip WAL coverage on repo2 (which
+# has no continuous archive by design — D-22a); verify works against the archive
+# directory contents as found.
 
 set -uo pipefail
 
@@ -55,7 +58,6 @@ env \
     gosu postgres /usr/bin/pgbackrest \
         --stanza=timescaledb \
         "--repo=${_repo_key}" \
-        --no-pitr \
         verify \
         >"${_stderr_file}" 2>&1 || _exit_code=$?
 
