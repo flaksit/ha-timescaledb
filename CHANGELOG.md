@@ -6,6 +6,33 @@ All notable changes to this addon are documented here. Format loosely follows
 (`-phaseN.M`) mark in-flight development iterations and are not released to
 HACS.
 
+## [1.1.3] — 2026-10-15
+
+Dependency update release.
+
+### Changed
+
+- TimescaleDB 2.27.0 → 2.30.2 (image `timescale/timescaledb:2.30.2-pg18`,
+  PostgreSQL 18.6). The extension is upgraded automatically on first start
+  (`ALTER EXTENSION timescaledb UPDATE`); downgrading afterwards requires a
+  pgBackRest restore.
+- pgBackRest 2.58.0 → 2.59.3. Fixes possibly weak encryption subkeys when
+  system random data is unavailable (see the pgBackRest 2.59.3 release
+  notes for how to check existing repositories).
+- s6-overlay 3.2.3.2, bashio 0.19.0, tempio 2026.07.0.
+- The pgBackRest build stage is now based on the runtime image and copies
+  only the libraries the runtime lacks; it no longer replaces the runtime's
+  musl/OpenSSL.
+- s6 user bundle moved to `/etc/s6-overlay/user-bundles.d` (s6-overlay 3.2.3
+  layout).
+
+### Fixed
+
+- `scripts/verify-restore`: works with pgBackRest 2.59 (`info` runs as
+  `postgres`), restores with `--archive-mode=off`, and the `pass` offline
+  path reads secrets and `pgbackrest.conf` from one prefix. The quarterly
+  drill playbook now includes an offline-path run.
+
 ## [1.1.2] — 2026-05-21
 
 v1.1.x backup hardening release. Consolidates the three `-phase10.N` dev
