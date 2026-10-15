@@ -41,9 +41,11 @@ Options:
   --container <name>       TimescaleDB container name on the HAOS host (default: auto-detected)
   --repo <1|2>             pgBackRest repo to restore from (default: 1)
   --secrets-dir <path>     Local directory containing pre-copied secret files (priority 3)
-  --pass-path <prefix>     pass store path prefix for offline secret retrieval (priority 2)
+  --pass-path <prefix>     pass store path prefix for offline secret retrieval (priority 2),
+                           e.g. home-assistant/pgbackrest. Offline, pgbackrest.conf is also read
+                           from <prefix>/pgbackrest.conf unless --pgbackrest-conf is given.
   --pgbackrest-conf <path> Local pgbackrest.conf to use instead of fetching from the live container.
-                           Required when the live Pi/container is unavailable (offline DR scenario).
+                           Offline (live Pi/container unavailable), this or --pass-path is required.
   --keep                   After a successful verify, leave the verify container + PostgreSQL
                            running so the restored database can be inspected interactively.
                            Prints connection and cleanup commands. Default: tear everything down.
@@ -123,14 +125,16 @@ trap '_cleanup_on_exit' EXIT
 # Resolve live container name (skip if offline mode is active)
 # ────────────────────────────────────────────────────────────────────────────
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(ssh "$HA_SSH" "docker ps --format '{{.Names}}' | grep -i timescale" 2>/dev/null) \
+  # ConnectTimeout: in a real DR the Pi is often unreachable; fail over to
+  # offline mode quickly instead of waiting for the TCP default timeout.
+  CONTAINER=$(ssh -o ConnectTimeout=10 "$HA_SSH" "docker ps --format '{{.Names}}' | grep -i timescale" 2>/dev/null) \
     || true
   if [[ -z "$CONTAINER" ]]; then
-    if [[ -n "$PGBACKREST_CONF_PATH" ]]; then
-      echo "INFO: live container not found; proceeding with --pgbackrest-conf (offline mode)"
+    if [[ -n "$PGBACKREST_CONF_PATH" || -n "$PASS_PREFIX" ]]; then
+      echo "INFO: live container not found; proceeding in offline mode"
     else
       echo "ERROR: could not resolve TimescaleDB container name."
-      echo "       Use --container to specify it explicitly, or --pgbackrest-conf for offline mode."
+      echo "       Use --container to specify it explicitly, or --pass-path / --pgbackrest-conf for offline mode."
       exit 1
     fi
   fi
@@ -164,9 +168,11 @@ _fetch_secret_quiet() {
     return 0
   fi
 
-  # Priority 2: pass store (offline fallback; only when --pass-path was given)
+  # Priority 2: pass store (offline fallback; only when --pass-path was given).
+  # Entries drop the "pgbackrest_" prefix — the pass folder already names the
+  # tool (e.g. home-assistant/pgbackrest/cipher_pass_repo1).
   if [[ -n "$PASS_PREFIX" ]]; then
-    if pass show "${PASS_PREFIX}/${filename}" > "$dest_file" 2>/dev/null \
+    if pass show "${PASS_PREFIX}/${filename#pgbackrest_}" > "$dest_file" 2>/dev/null \
         && [[ -s "$dest_file" ]]; then
       return 0
     fi
@@ -191,7 +197,7 @@ fetch_secret() {
   fi
   echo "ERROR: could not acquire secret '${filename}'"
   echo "       Tried: ssh ${HA_SSH} docker exec ${CONTAINER:-<container>} cat /data/secrets/${filename}"
-  [[ -n "$PASS_PREFIX" ]]      && echo "       Tried: pass show ${PASS_PREFIX}/${filename}"
+  [[ -n "$PASS_PREFIX" ]]      && echo "       Tried: pass show ${PASS_PREFIX}/${filename#pgbackrest_}"
   [[ -n "$SECRETS_DIR_FLAG" ]] && echo "       Tried: ${SECRETS_DIR_FLAG}/${filename}"
   echo "       Use --pass-path or --secrets-dir to provide secrets when the live Pi is offline."
   exit 1
@@ -248,6 +254,16 @@ if [[ -n "$PGBACKREST_CONF_PATH" ]]; then
   # reconstructed pgbackrest.conf for the offline DR scenario.
   cp "$PGBACKREST_CONF_PATH" "${TMPDIR_SECRETS}/pgbackrest.conf"
   echo "INFO: using provided pgbackrest.conf (offline mode)"
+elif [[ -z "$CONTAINER" ]]; then
+  # Offline without --pgbackrest-conf: container resolution only gets here when
+  # --pass-path is set, so the conf must come from the pass store.
+  if ! pass show "${PASS_PREFIX}/pgbackrest.conf" > "${TMPDIR_SECRETS}/pgbackrest.conf" 2>/dev/null \
+      || [[ ! -s "${TMPDIR_SECRETS}/pgbackrest.conf" ]]; then
+    echo "ERROR: could not read pgbackrest.conf from pass (${PASS_PREFIX}/pgbackrest.conf)."
+    echo "       Use --pgbackrest-conf to provide it."
+    exit 1
+  fi
+  echo "INFO: using pgbackrest.conf from pass (offline mode)"
 else
   echo "==> Fetching pgbackrest.conf from live container ..."
   ssh "$HA_SSH" "docker exec ${CONTAINER} cat /etc/pgbackrest/pgbackrest.conf" \
@@ -314,14 +330,17 @@ docker exec "${CONTAINER_NAME}" chown 70:70 /secrets/id_ed25519 /secrets/known_h
 #
 # WHY apk + edge community pin: timescale/timescaledb:latest-pg18 is an Alpine
 # image, so apk is the only package manager available. The Alpine stable repos
-# ship pgbackrest 2.57.0-r0, but the addon container is built against
-# pgbackrest 2.58.0-r0 from alpine:edge community (see timescaledb/Dockerfile).
-# Restoring a 2.58-produced backup with a 2.57 client is not guaranteed to be
-# safe, so this script pins the exact same version + repo as the addon. If the
-# edge community repo no longer carries 2.58.0-r0, this install fails fast with
-# a clear error rather than silently degrading to 2.57.0-r0.
+# lag behind, so this pins the same alpine:edge community package the app
+# image uses (see timescaledb/Dockerfile). A client older than the one that
+# wrote the backups is not guaranteed to read them; newer is. If the pin
+# disappears from edge (edge only keeps the current version), the install
+# fails fast rather than silently degrading.
+#
+# Renovate bumps this together with the Dockerfile pin (same depName → same
+# branch), keeping the two in sync.
 # ────────────────────────────────────────────────────────────────────────────
-PGBACKREST_PIN="2.58.0-r0"
+# renovate: datasource=repology depName=alpine_edge/pgbackrest versioning=loose
+PGBACKREST_PIN="2.59.3-r0"
 PGBACKREST_REPO_URL="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 echo "==> Installing pgBackRest ${PGBACKREST_PIN} in verify container ..."
 docker exec "${CONTAINER_NAME}" sh -c \
@@ -433,11 +452,20 @@ docker exec "${CONTAINER_NAME}" bash -c \
 # (.backup[].timestamp.stop in the info JSON) is the authoritative signal.
 # ────────────────────────────────────────────────────────────────────────────
 echo "==> Fetching backup info for repo${REPO} ..."
-_info_json=$(docker exec \
+#
+# WHY -u postgres: pgBackRest >= 2.59 refuses to run `info` as root
+# (ERROR [031]). Running as root then yielded no JSON, which surfaced only as a
+# misleading "no backup found" freshness failure.
+# WHY print output on failure: pgBackRest writes its errors to stdout, so the
+# captured text is the only diagnostic.
+if ! _info_json=$(docker exec -u postgres \
   "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
-  pgbackrest --stanza=timescaledb "--repo=${REPO}" info --output=json 2>/dev/null \
-  || echo '[]')
+  pgbackrest --stanza=timescaledb "--repo=${REPO}" info --output=json); then
+  echo "ERROR: pgbackrest info failed:"
+  printf '%s\n' "${_info_json}"
+  _info_json='[]'
+fi
 
 # Extract stop timestamp of the most recent backup for this repo.
 # .backup[] entries carry timestamps; we select by database.repo-key matching REPO.
@@ -471,6 +499,11 @@ echo "==> Restoring repo${REPO} backup to /restore/pgdata ..."
 #   checkpoint record'. Stopping recovery at backup-end is the correct
 #   semantic for a yearly-archive repo. Row count + max(last_updated) still
 #   verify the physical backup is intact.
+#
+# WHY --archive-mode=off: the restored cluster inherits the live
+# archive_command (archive-push to the real repos). Once it promotes it would
+# push a new timeline into the live WAL archive; it only failed before because
+# the live conf/secret paths don't exist in the verify container.
 _RESTORE_TYPE_FLAGS=()
 if [[ "${REPO}" == "2" ]]; then
   _RESTORE_TYPE_FLAGS=( --type=immediate )
@@ -479,7 +512,7 @@ docker exec \
   "${PGBACKREST_ENV[@]}" \
   "${CONTAINER_NAME}" \
   pgbackrest --stanza=timescaledb "--repo=${REPO}" \
-    restore --pg1-path=/restore/pgdata "${_RESTORE_TYPE_FLAGS[@]}"
+    restore --pg1-path=/restore/pgdata --archive-mode=off "${_RESTORE_TYPE_FLAGS[@]}"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Install a retry wrapper around pgbackrest archive-get and rewrite the

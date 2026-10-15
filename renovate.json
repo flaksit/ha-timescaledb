@@ -13,12 +13,13 @@
       "datasourceTemplate": "docker"
     },
     {
-      "description": "Versions annotated with a `# renovate:` comment on the preceding line (build.yaml args, apk pins in the Dockerfile)",
+      "description": "Versions annotated with a `# renovate:` comment on the preceding line (build.yaml args, apk pins in the Dockerfile and verify-restore.sh)",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)build\\.yaml$/", "/(^|/)Dockerfile$/"],
+      "managerFilePatterns": ["/(^|/)build\\.yaml$/", "/(^|/)Dockerfile$/", "/(^|/)verify-restore\\.sh$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*\\w+: \"?(?<currentValue>[^\"\\s]+)\"?",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n[^\\n]*\"\\w[\\w-]*=(?<currentValue>[^\"]+)\""
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n[^\\n]*\"\\w[\\w-]*=(?<currentValue>[^\"]+)\"",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\w+=\"(?<currentValue>[^\"]+)\""
       ]
     }
   ],
