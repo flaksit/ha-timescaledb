@@ -49,7 +49,13 @@ ARG BASHIO_VERSION
 ARG TEMPIO_VERSION
 ARG TARGETARCH
 
+# WHY /command on PATH: scripts with a `#!/command/with-contenv` shebang (e.g.
+# run-verify.sh) exec execline tools like `ifelse` by name. s6 services get
+# /command on PATH, but `docker exec` shells only see the image ENV, so the
+# documented manual retry `docker exec <ctr> run-verify.sh` failed with
+# "unable to exec ifelse".
 ENV \
+    PATH=/command:$PATH \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
