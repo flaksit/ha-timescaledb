@@ -17,7 +17,7 @@ SECRETS_DIR="/data/secrets"
 . /usr/lib/timescaledb/backup-lib.sh
 
 # Idle permanently when backup is disabled. The s6 service is always started (it is
-# registered in user/contents.d), but it must not attempt any pgbackrest calls when
+# registered in the user bundle), but it must not attempt any pgbackrest calls when
 # backup_enabled=false.
 #
 # WHY while-loop and not 'exec sleep infinity': Alpine BusyBox sleep does not accept
