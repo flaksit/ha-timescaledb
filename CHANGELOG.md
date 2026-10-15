@@ -6,6 +6,15 @@ All notable changes to this addon are documented here. Format loosely follows
 (`-phaseN.M`) mark in-flight development iterations and are not released to
 HACS.
 
+## [1.1.4] — 2026-10-15
+
+### Fixed
+
+- The manual verify retry command from the verify-failure notification
+  (`docker exec <container> /usr/lib/timescaledb/run-verify.sh repoN`) failed
+  with `execlineb: fatal: unable to exec ifelse`; `/command` is now on the
+  image `PATH`.
+
 ## [1.1.3] — 2026-10-15
 
 Dependency update release.
