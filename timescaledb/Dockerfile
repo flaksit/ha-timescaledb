@@ -6,9 +6,15 @@ ARG BUILD_FROM
 # with the source-built PG18 in /usr/local/bin and creates /etc/postgresql as
 # a symlink that breaks `COPY rootfs /` later. Multi-stage takes only the
 # pgbackrest binary plus missing .so libs (libssh2, libbz2) into the runtime.
-# WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies
-# not present in the postgres:18-alpine image. The RUN step below fails the
-# build if any symbol is unresolved.
+# WHY the stage is FROM ${BUILD_FROM}: the copied libs then come from the same
+# Alpine release as the runtime, and only libs the runtime lacks are copied.
+# A separate alpine:3.x stage copied every linked lib, overwriting the
+# runtime's musl/openssl with another release's builds — which PostgreSQL
+# then ran on too. It also keeps the stage's Alpine in lockstep with the
+# TimescaleDB image, so there is no separate Alpine version to bump.
+# WHAT ldd guard catches: an edge pgbackrest build that needs newer libs than
+# the runtime's Alpine release provides. The RUN step in the runtime stage
+# fails the build if any library or symbol is unresolved.
 # VERSION note: pgbackrest is pulled from alpine:edge community because Alpine
 # stable lags behind upstream releases. The pinned version is subject to an
 # upstream pgbackrest bug in storageSftpPathCreate (path-create infinite
@@ -16,20 +22,22 @@ ARG BUILD_FROM
 # filed yet). The bug is avoided by configuring pgBackRest against Hetzner
 # *sub-account* chroots at repo-path `/`, not against the main account with
 # subpaths. See DOCS.md section "Backup (pgBackRest to Hetzner Storage Box)".
-FROM alpine:3.23 AS pgbackrest-stage
+FROM ${BUILD_FROM} AS pgbackrest-stage
+
+# Snapshot the runtime's libs so the export below can skip them.
+RUN find /lib /usr/lib -name '*.so*' | sort > /tmp/libs-before
 
 # renovate: datasource=repology depName=alpine_edge/pgbackrest versioning=loose
 RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.59.3-r0"
 
-# Copy pgbackrest binary plus only the .so files not already in the postgres:18-alpine
-# runtime image into /export/ for selective COPY into the runtime stage.
-# Known delta libs vs postgres:18-alpine: libssh2.so.1, libbz2.so.1 — but ldd parsing
-# catches future additions automatically.
+# Export the pgbackrest binary plus only the .so files the runtime image lacks
+# (currently libssh2.so.1, libbz2.so.1; ldd parsing picks up future additions).
 RUN set -eux; \
     mkdir -p /export/usr/bin; \
     cp /usr/bin/pgbackrest /export/usr/bin/pgbackrest; \
     LIBS=$(ldd /usr/bin/pgbackrest | awk '/=>/ {print $3}' | grep -E '^/(usr/)?lib/' || true); \
     for L in $LIBS; do \
+      grep -qxF "$L" /tmp/libs-before && continue; \
       mkdir -p "/export$(dirname $L)"; \
       cp -aL "$L" "/export$L"; \
     done
