@@ -48,7 +48,7 @@ Defaults are sufficient when the HAOS host is online:
 Then exercise the offline path (what a real disaster uses), forcing offline mode with an unreachable SSH alias:
 
 ```bash
-./verify-restore.sh --repo 1 --ha-ssh offline-test --pass-path home-assistant/pgbackrest
+./verify-restore.sh --repo 1 --ha-ssh offline-test --pass-path ha-timescaledb
 ```
 
 This proves the `pass` copies of secrets and `pgbackrest.conf` are current. Offline mode skips the row-count check, so only freshness and a successful restore are verified. On a secret or conf error, refresh the `pass` entries (see [`README.md`](./README.md) §"Priority 2: `pass` password store") and re-run.

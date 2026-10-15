@@ -37,7 +37,7 @@ the live TimescaleDB instance for row count comparison. Run from the repo root o
 | `--container <name>` | auto-detected | TimescaleDB container name on the HAOS host. Auto-detected via `docker ps \| grep -i timescale` if not set. |
 | `--repo <1\|2>` | `1` | pgBackRest repo to restore from. repo1 = rolling operational; repo2 = annual archival. |
 | `--secrets-dir <path>` | none | Path to a local directory containing pre-copied secret files (last resort, priority 3). |
-| `--pass-path <prefix>` | none | Pass store path prefix for offline secret retrieval (priority 2), e.g. `home-assistant/pgbackrest`. Offline, `pgbackrest.conf` is also read from `<prefix>/pgbackrest.conf` unless `--pgbackrest-conf` is given. |
+| `--pass-path <prefix>` | none | Pass store path prefix for offline secret retrieval (priority 2), e.g. `ha-timescaledb`. Offline, `pgbackrest.conf` is also read from `<prefix>/pgbackrest.conf` unless `--pgbackrest-conf` is given. |
 | `--pgbackrest-conf <path>` | none | Path to a local `pgbackrest.conf` file, used instead of the live container's (offline DR scenario). Takes precedence over the `pass` copy. |
 | `--keep` | off | After a successful verify, leave the verify container and PostgreSQL running so the restored database can be inspected interactively. The script prints the exact `docker exec … psql` connection command and the `docker rm -f` cleanup command when it exits. On failure the container is still removed. |
 
@@ -73,10 +73,10 @@ Populate or refresh them from the live app container (requires the HAOS host onl
 C=$(ssh ha "docker ps --format '{{.Names}}' | grep -i timescale")
 for f in cipher_pass id_ed25519 known_hosts; do for r in 1 2; do
   ssh ha "docker exec $C cat /data/secrets/pgbackrest_${f}_repo${r}" \
-    | pass insert -m -f "home-assistant/pgbackrest/${f}_repo${r}"
+    | pass insert -m -f "ha-timescaledb/${f}_repo${r}"
 done; done
 ssh ha "docker exec $C cat /etc/pgbackrest/pgbackrest.conf" \
-  | pass insert -m -f home-assistant/pgbackrest/pgbackrest.conf
+  | pass insert -m -f ha-timescaledb/pgbackrest.conf
 ```
 
 ### Priority 3: Local secrets directory (last resort)
@@ -121,7 +121,7 @@ message.
 When the HAOS host is unavailable, use the `pass` fallback:
 
 ```bash
-./verify-restore.sh --repo 1 --pass-path home-assistant/pgbackrest
+./verify-restore.sh --repo 1 --pass-path ha-timescaledb
 ```
 
 Offline mode starts when the container can't be resolved over SSH (10 s connect timeout). To exercise it while the host is online, pass an unreachable alias, e.g. `--ha-ssh offline-test`. Without a `pass` copy of `pgbackrest.conf`, provide one with `--pgbackrest-conf` (reconstruct it from the `timescaledb/DOCS.md` configuration reference if needed).

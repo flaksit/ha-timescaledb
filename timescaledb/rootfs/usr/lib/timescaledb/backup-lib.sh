@@ -154,7 +154,7 @@ repo_du() {
     [ -f "${_key}" ] || { echo ""; return 0; }
 
     # Read host and user from pgbackrest.conf — sub-account numbers don't match repo keys
-    # (e.g. repo1 → sub4, repo2 → sub5) so constructing from _rk would use wrong hosts.
+    # (e.g. repo1 → sub3, repo2 → sub4) so constructing from _rk would use wrong hosts.
     local _host _user
     _host=$(grep -m1 "^repo${_rk}-sftp-host=" /etc/pgbackrest/pgbackrest.conf 2>/dev/null | cut -d= -f2)
     _user=$(grep -m1 "^repo${_rk}-sftp-host-user=" /etc/pgbackrest/pgbackrest.conf 2>/dev/null | cut -d= -f2)

@@ -209,7 +209,7 @@ Storage Boxes are managed through the [Hetzner Cloud Console](https://console.he
 - **Samba/CIFS, WebDAV:** off — pgBackRest does not use them.
 - **SSH support:** off. With SSH off the sub-account exposes only SFTP on port 22; the port-23 extended shell that offers `install-ssh-key` / `ssh-copy-id` / rsync / borg stays disabled, which is fine — the main account keeps SSH enabled so it can write each sub-account's `authorized_keys` file in step 3.
 
-The Console assigns each sub a username (e.g. `u404673-sub4`) and the per-sub hostname follows the pattern `<username>.your-storagebox.de` (e.g. `u404673-sub4.your-storagebox.de`). Note both — the app needs them in step 5.
+The Console assigns each sub a username (e.g. `u123456-sub1`) and the per-sub hostname follows the pattern `<username>.your-storagebox.de` (e.g. `u123456-sub1.your-storagebox.de`). Note both — the app needs them in step 5.
 
 References: [Sub-account access overview](https://docs.hetzner.com/storage/storage-box/access/access-overview/), [SFTP/SCP access docs](https://docs.hetzner.com/storage/storage-box/access/access-sftp-scp/).
 
@@ -236,21 +236,21 @@ ssh-keygen -e -f ./repo1.pub > ./repo1.rfc.pub
 ssh-keygen -e -f ./repo2.pub > ./repo2.rfc.pub
 
 # Connect to MAIN account (port 23) and create the .ssh dirs inside each sub chroot
-ssh -p 23 u404673@u404673.your-storagebox.de "mkdir backups/ha-tsdb-continuous/.ssh; mkdir backups/ha-tsdb-yearly/.ssh"
+ssh -p 23 u123456@u123456.your-storagebox.de "mkdir backups/ha-tsdb-continuous/.ssh; mkdir backups/ha-tsdb-yearly/.ssh"
 
 # Upload as authorized_keys (one per sub)
-scp -O -P 23 ./repo1.rfc.pub u404673@u404673.your-storagebox.de:backups/ha-tsdb-continuous/.ssh/authorized_keys
-scp -O -P 23 ./repo2.rfc.pub u404673@u404673.your-storagebox.de:backups/ha-tsdb-yearly/.ssh/authorized_keys
+scp -O -P 23 ./repo1.rfc.pub u123456@u123456.your-storagebox.de:backups/ha-tsdb-continuous/.ssh/authorized_keys
+scp -O -P 23 ./repo2.rfc.pub u123456@u123456.your-storagebox.de:backups/ha-tsdb-yearly/.ssh/authorized_keys
 
 # Tighten permissions (Hetzner enforces these for SSH key auth)
-ssh -p 23 u404673@u404673.your-storagebox.de "chmod 700 backups/ha-tsdb-continuous/.ssh backups/ha-tsdb-yearly/.ssh; chmod 600 backups/ha-tsdb-continuous/.ssh/authorized_keys backups/ha-tsdb-yearly/.ssh/authorized_keys"
+ssh -p 23 u123456@u123456.your-storagebox.de "chmod 700 backups/ha-tsdb-continuous/.ssh backups/ha-tsdb-yearly/.ssh; chmod 600 backups/ha-tsdb-continuous/.ssh/authorized_keys backups/ha-tsdb-yearly/.ssh/authorized_keys"
 ```
 
 Verify each sub-account auth works (each should connect and land at `/`):
 
 ```bash
-sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'pwd'
-sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'pwd'
+sftp -i ./repo1 -P 22 u123456-sub1@u123456-sub1.your-storagebox.de <<< 'pwd'
+sftp -i ./repo2 -P 22 u123456-sub2@u123456-sub2.your-storagebox.de <<< 'pwd'
 ```
 
 #### Step 4. Stage the secrets on the HA host
@@ -269,14 +269,14 @@ Files required:
 |------|---------|
 | `pgbackrest_id_ed25519_repo1` | repo1 private key (the `repo1` file from step 2) |
 | `pgbackrest_id_ed25519_repo2` | repo2 private key (the `repo2` file from step 2) |
-| `pgbackrest_known_hosts_repo1` | host fingerprints for sub4 — see below |
-| `pgbackrest_known_hosts_repo2` | host fingerprints for sub5 — see below |
+| `pgbackrest_known_hosts_repo1` | host fingerprints for sub-account 1 — see below |
+| `pgbackrest_known_hosts_repo2` | host fingerprints for sub-account 2 — see below |
 
 Generate the known_hosts files by scanning each sub on port 22:
 
 ```bash
-ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub4.your-storagebox.de > ./known_hosts_repo1
-ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u404673-sub5.your-storagebox.de > ./known_hosts_repo2
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u123456-sub1.your-storagebox.de > ./known_hosts_repo1
+ssh-keyscan -p 22 -t rsa,ecdsa,ed25519 u123456-sub2.your-storagebox.de > ./known_hosts_repo2
 ```
 
 Push everything to the HA host. The `-O` flag selects the original SCP wire protocol; HAOS BusyBox ssh does not implement the SFTP transfer protocol that OpenSSH clients default to:
@@ -346,8 +346,8 @@ After a successful first start, list the stanza contents from your workstation:
 
 ```bash
 # List contents of each sub via SFTP
-sftp -i ./repo1 -P 22 u404673-sub4@u404673-sub4.your-storagebox.de <<< 'ls -l'
-sftp -i ./repo2 -P 22 u404673-sub5@u404673-sub5.your-storagebox.de <<< 'ls -l'
+sftp -i ./repo1 -P 22 u123456-sub1@u123456-sub1.your-storagebox.de <<< 'ls -l'
+sftp -i ./repo2 -P 22 u123456-sub2@u123456-sub2.your-storagebox.de <<< 'ls -l'
 ```
 
 Each should list `archive/` and `backup/` directories owned by the corresponding sub-user.
@@ -500,14 +500,11 @@ The script:
 See [`scripts/verify-restore/README.md`](../scripts/verify-restore/README.md) for flags,
 credential modes, and prerequisites.
 
-For offline use when the Pi is unavailable, use `--pgbackrest-conf` to provide a local
-pgbackrest.conf and `--pass-path` to pull secrets from your password manager:
+For offline use when the Pi is unavailable, use `--pass-path` to pull secrets and
+`pgbackrest.conf` from your `pass` store (or `--pgbackrest-conf` for a local conf file):
 
 ```bash
-./scripts/verify-restore/verify-restore.sh \
-  --repo 1 \
-  --pgbackrest-conf ~/pgbackrest.conf \
-  --pass-path home-assistant/backups
+./scripts/verify-restore/verify-restore.sh --repo 1 --pass-path ha-timescaledb
 ```
 
 To restore to a fresh Pi (disaster recovery), follow the

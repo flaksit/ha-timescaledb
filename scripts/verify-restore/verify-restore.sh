@@ -42,7 +42,7 @@ Options:
   --repo <1|2>             pgBackRest repo to restore from (default: 1)
   --secrets-dir <path>     Local directory containing pre-copied secret files (priority 3)
   --pass-path <prefix>     pass store path prefix for offline secret retrieval (priority 2),
-                           e.g. home-assistant/pgbackrest. Offline, pgbackrest.conf is also read
+                           e.g. ha-timescaledb. Offline, pgbackrest.conf is also read
                            from <prefix>/pgbackrest.conf unless --pgbackrest-conf is given.
   --pgbackrest-conf <path> Local pgbackrest.conf to use instead of fetching from the live container.
                            Offline (live Pi/container unavailable), this or --pass-path is required.
@@ -169,8 +169,8 @@ _fetch_secret_quiet() {
   fi
 
   # Priority 2: pass store (offline fallback; only when --pass-path was given).
-  # Entries drop the "pgbackrest_" prefix — the pass folder already names the
-  # tool (e.g. home-assistant/pgbackrest/cipher_pass_repo1).
+  # Entries drop the "pgbackrest_" prefix (e.g. <prefix>/cipher_pass_repo1);
+  # the prefix folder already scopes them.
   if [[ -n "$PASS_PREFIX" ]]; then
     if pass show "${PASS_PREFIX}/${filename#pgbackrest_}" > "$dest_file" 2>/dev/null \
         && [[ -s "$dest_file" ]]; then
