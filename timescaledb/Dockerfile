@@ -16,7 +16,7 @@ ARG BUILD_FROM
 # filed yet). The bug is avoided by configuring pgBackRest against Hetzner
 # *sub-account* chroots at repo-path `/`, not against the main account with
 # subpaths. See DOCS.md section "Backup (pgBackRest to Hetzner Storage Box)".
-FROM alpine:3.23 AS pgbackrest-stage
+FROM alpine:3.24 AS pgbackrest-stage
 
 # renovate: datasource=repology depName=alpine_edge/pgbackrest versioning=loose
 RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.59.3-r0"
