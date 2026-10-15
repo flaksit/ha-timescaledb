@@ -13,6 +13,17 @@
       "datasourceTemplate": "docker"
     },
     {
+      "description": "TimescaleDB version shown to users (README table, DOCS intro, app store description). Tracks the `-pg18` image tag, so it moves in the same grouped PR as build.yaml.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)README\\.md$/", "/(^|/)DOCS\\.md$/", "/(^|/)config\\.yaml$/"],
+      "matchStrings": [
+        "TimescaleDB(?: \\| | )(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "timescale/timescaledb",
+      "datasourceTemplate": "docker",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+\\.\\d+)-pg18$"
+    },
+    {
       "description": "Versions annotated with a `# renovate:` comment on the preceding line (build.yaml args, apk pins in the Dockerfile and verify-restore.sh)",
       "customType": "regex",
       "managerFilePatterns": ["/(^|/)build\\.yaml$/", "/(^|/)Dockerfile$/", "/(^|/)verify-restore\\.sh$/"],

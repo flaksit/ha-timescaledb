@@ -355,7 +355,7 @@ if bashio::config.true 'backup_enabled'; then
     done
 
     # Phase 2: stanza-create once for all configured repos.
-    # pgBackRest 2.57+ does not accept --repo on stanza-create; it always operates on all
+    # pgBackRest does not accept --repo on stanza-create; it always operates on all
     # repos defined in pgbackrest.conf. Both cipher passphrases are injected via env vars
     # (files may be absent for unconfigured repos — 2>/dev/null returns empty string, which
     # pgBackRest ignores for repos not present in the config).

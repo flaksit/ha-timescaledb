@@ -9,10 +9,9 @@ ARG BUILD_FROM
 # WHAT ldd guard catches: Future Alpine bumps may add runtime .so dependencies
 # not present in the postgres:18-alpine image. The RUN step below fails the
 # build if any symbol is unresolved.
-# VERSION note: pgbackrest 2.58.0 is pulled from alpine:edge community because
-# alpine:3.23 stable only ships 2.57.0 at time of writing. There is no known
-# 2.57-vs-2.58 functional difference relevant to this app — both are subject
-# to an upstream pgbackrest bug in storageSftpPathCreate (path-create infinite
+# VERSION note: pgbackrest is pulled from alpine:edge community because Alpine
+# stable lags behind upstream releases. The pinned version is subject to an
+# upstream pgbackrest bug in storageSftpPathCreate (path-create infinite
 # recursion when SFTP returns NO_SUCH_FILE walking up to `/`; no upstream issue
 # filed yet). The bug is avoided by configuring pgBackRest against Hetzner
 # *sub-account* chroots at repo-path `/`, not against the main account with

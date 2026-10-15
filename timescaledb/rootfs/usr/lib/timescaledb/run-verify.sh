@@ -14,7 +14,7 @@
 # its INFO and ERROR lines to stdout via log-level-console=info; a stderr-only redirect
 # would yield an empty tail for the failure notification.
 # WHY tail -n 5: D-07 schema literally specifies "last 5 lines of stderr", not bytes.
-# WHY no --no-pitr flag: pgBackRest 2.58 verify does not accept --no-pitr (that flag is
+# WHY no --no-pitr flag: pgBackRest verify does not accept --no-pitr (that flag is
 # restore-only). RESEARCH.md was incorrect on this point. Verify's manifest + archive
 # checksum validation does not require any flag to skip WAL coverage on repo2 (which
 # has no continuous archive by design — D-22a); verify works against the archive
@@ -49,7 +49,7 @@ _exit_code=0
 
 bashio::log.info "run-verify.sh: ${REPO_ID} verify starting"
 
-# Both cipher passphrases are injected regardless of --repo=N: pgbackrest 2.58 reads
+# Both cipher passphrases are injected regardless of --repo=N: pgbackrest reads
 # all configured repo cipher passes when discovering stanza metadata. Matches the
 # run_backup invocation pattern verbatim.
 env \
