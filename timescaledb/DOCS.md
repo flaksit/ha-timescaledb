@@ -1,6 +1,6 @@
 # TimescaleDB App
 
-PostgreSQL 18 with TimescaleDB for Home Assistant, packaged as a Home Assistant app and tuned for the Raspberry Pi 5.
+PostgreSQL 18 with TimescaleDB 2.27.0 for Home Assistant, packaged as a Home Assistant app and tuned for the Raspberry Pi 5.
 
 ## What this app is (and is not)
 

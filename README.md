@@ -29,6 +29,7 @@ See the [full documentation](timescaledb/DOCS.md) for configuration options.
 | Component | Version |
 |-----------|---------|
 | PostgreSQL | 18 |
+| TimescaleDB | 2.27.0 |
 | Target | aarch64 (Raspberry Pi 5) |
 
 Other component versions are pinned in [`timescaledb/build.yaml`](timescaledb/build.yaml) and [`timescaledb/Dockerfile`](timescaledb/Dockerfile).
