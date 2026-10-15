@@ -27,7 +27,7 @@ FROM ${BUILD_FROM} AS pgbackrest-stage
 # Snapshot the runtime's libs so the export below can skip them.
 RUN find /lib /usr/lib -name '*.so*' | sort > /tmp/libs-before
 
-# renovate: datasource=repology depName=alpine_edge/pgbackrest versioning=loose
+# renovate: datasource=apk depName=pgbackrest
 RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.59.3-r0"
 
 # Export the pgbackrest binary plus only the .so files the runtime image lacks
