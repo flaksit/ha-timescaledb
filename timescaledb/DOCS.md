@@ -27,7 +27,7 @@ The configuration sections below apply to both deployments. Sections specific to
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `database` | string | `homeassistant` | Name of the PostgreSQL database to create. Change only if you need a custom database name. |
-| `shared_buffers` | string | `256MB` | PostgreSQL shared memory. Increase to `512MB` if your Pi has 8GB RAM. |
+| `shared_buffers` | string | `256MB` | PostgreSQL shared memory. Increase to `512MB` if your host has 8GB RAM. |
 | `work_mem` | string | `32MB` | Memory per sort/hash operation. Default is sufficient for Home Assistant workloads. |
 | `effective_cache_size` | string | `768MB` | Planner hint for available OS cache. Set to ~75% of free RAM. |
 | `max_connections` | int | `50` | Maximum simultaneous database connections. Home Assistant typically uses 5-10. |
@@ -205,7 +205,7 @@ Storage Boxes are managed through the [Hetzner Cloud Console](https://console.he
 - **Home directory:** a dedicated, empty subpath of the main account, one per repo (e.g. `/home/backups/ha-tsdb-continuous` and `/home/backups/ha-tsdb-yearly`). Sub-accounts are chrooted to this directory and see it as their `/`.
 - **Comment / label:** `pgbackrest repo1` and `pgbackrest repo2` (free text — only shown in the Console).
 - **Read-only:** off (pgBackRest must write).
-- **External Reachability:** on — required for the Storage Box to be reachable from outside Hetzner's internal network (e.g. from a Raspberry Pi at home).
+- **External Reachability:** on — required for the Storage Box to be reachable from outside Hetzner's internal network (e.g. from your HA host at home).
 - **Samba/CIFS, WebDAV:** off — pgBackRest does not use them.
 - **SSH support:** off. With SSH off the sub-account exposes only SFTP on port 22; the port-23 extended shell that offers `install-ssh-key` / `ssh-copy-id` / rsync / borg stays disabled, which is fine — the main account keeps SSH enabled so it can write each sub-account's `authorized_keys` file in step 3.
 
@@ -491,7 +491,7 @@ hardware failure or for an offline drill — use the `verify-restore` script:
 
 The script:
 
-1. Pulls secrets from the HA host (or from your `pass` store if the Pi is offline)
+1. Pulls secrets from the HA host (or from your `pass` store if HA is offline)
 2. Starts a throwaway `timescale/timescaledb:latest-pg18` Docker container
 3. Installs pgBackRest and restores the most recent backup from the chosen repo
 4. Queries both the restored database and the live HA instance to confirm row counts match
@@ -500,14 +500,14 @@ The script:
 See [`scripts/verify-restore/README.md`](../scripts/verify-restore/README.md) for flags,
 credential modes, and prerequisites.
 
-For offline use when the Pi is unavailable, use `--pass-path` to pull secrets and
+For offline use when live HA is unavailable, use `--pass-path` to pull secrets and
 `pgbackrest.conf` from your `pass` store (or `--pgbackrest-conf` for a local conf file):
 
 ```bash
 ./scripts/verify-restore/verify-restore.sh --repo 1 --pass-path ha-timescaledb
 ```
 
-To restore to a fresh Pi (disaster recovery), follow the
+To restore to a fresh HA host (disaster recovery), follow the
 [DR runbook](#disaster-recovery-runbook) instead — that procedure restores directly
 to `/data/postgres` after staging secrets.
 
@@ -647,11 +647,11 @@ reconnects (typically seconds), then restore to their last known state. No actio
 
 ### Disaster recovery runbook
 
-This runbook covers the full path from a failed or replaced Raspberry Pi to a verified running
+This runbook covers the full path from a failed or replaced HA host to a verified running
 database. Follow these steps in order. The runbook assumes all four secrets are in your password
 manager — see [Backup Setup, Step 7](#step-7-store-all-four-secrets-in-your-password-manager).
 
-> **Warning:** If the Pi NVMe fails and the cipher passphrases were not copied to a password
+> **Warning:** If the HA host's disk fails and the cipher passphrases were not copied to a password
 > manager, the affected repo's encrypted backup is permanently unrecoverable.
 
 #### Step 1. Provision a new HAOS instance
@@ -823,9 +823,9 @@ HA and other apps connect using the hostname `b872f4a0-timescaledb` on port `543
 3. Restart the app
 4. Connect from your machine:
    ```
-   psql "postgresql://postgres:PASSWORD@<RPI_IP>:5432/postgres"
+   psql "postgresql://postgres:PASSWORD@<HA_IP>:5432/postgres"
    ```
-   Replace `<RPI_IP>` with your Raspberry Pi's IP address and `PASSWORD` with the password from the app logs.
+   Replace `<HA_IP>` with your HA host's IP address and `PASSWORD` with the password from the app logs.
 
 ## Copying historical SQLite data to PostgreSQL
 
@@ -844,7 +844,7 @@ This is useful in either deployment:
 
 ### Step 1: Prepare the schema
 
-The migration tool ships a `reset-schema.sh` that drops and recreates the schema in the `homeassistant` database. Transfer the tool to the Pi and run it:
+The migration tool ships a `reset-schema.sh` that drops and recreates the schema in the `homeassistant` database. Transfer the tool to the HA host and run it:
 
 ```bash
 cd paradise-ha
@@ -901,7 +901,7 @@ ssh ha "docker run --rm --network hassio \
 
 `--skip-mutable` excludes rows HA is actively updating (current state per entity, the open recorder run). They are copied, verified, deleted from PostgreSQL, and recorded in `_migrate_excluded`. If you intend to swap the recorder, reconcile that table against live SQLite during the cutover (see the migration tool's README); otherwise the excluded rows simply remain unimported.
 
-Run time depends on database size and Pi class; expect roughly an hour for a multi-tens-of-millions-of-rows states table on a Pi 5.
+Run time depends on database size and hardware; expect roughly an hour for a multi-tens-of-millions-of-rows states table on a Pi 5.
 
 ### Verification
 

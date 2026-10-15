@@ -45,7 +45,7 @@ Options:
                            e.g. ha-timescaledb. Offline, pgbackrest.conf is also read
                            from <prefix>/pgbackrest.conf unless --pgbackrest-conf is given.
   --pgbackrest-conf <path> Local pgbackrest.conf to use instead of fetching from the live container.
-                           Offline (live Pi/container unavailable), this or --pass-path is required.
+                           Offline (live HA/container unavailable), this or --pass-path is required.
   --keep                   After a successful verify, leave the verify container + PostgreSQL
                            running so the restored database can be inspected interactively.
                            Prints connection and cleanup commands. Default: tear everything down.
@@ -125,7 +125,7 @@ trap '_cleanup_on_exit' EXIT
 # Resolve live container name (skip if offline mode is active)
 # ────────────────────────────────────────────────────────────────────────────
 if [[ -z "$CONTAINER" ]]; then
-  # ConnectTimeout: in a real DR the Pi is often unreachable; fail over to
+  # ConnectTimeout: in a real DR the HA host is often unreachable; fail over to
   # offline mode quickly instead of waiting for the TCP default timeout.
   CONTAINER=$(ssh -o ConnectTimeout=10 "$HA_SSH" "docker ps --format '{{.Names}}' | grep -i timescale" 2>/dev/null) \
     || true
@@ -199,7 +199,7 @@ fetch_secret() {
   echo "       Tried: ssh ${HA_SSH} docker exec ${CONTAINER:-<container>} cat /data/secrets/${filename}"
   [[ -n "$PASS_PREFIX" ]]      && echo "       Tried: pass show ${PASS_PREFIX}/${filename#pgbackrest_}"
   [[ -n "$SECRETS_DIR_FLAG" ]] && echo "       Tried: ${SECRETS_DIR_FLAG}/${filename}"
-  echo "       Use --pass-path or --secrets-dir to provide secrets when the live Pi is offline."
+  echo "       Use --pass-path or --secrets-dir to provide secrets when live HA is offline."
   exit 1
 }
 
@@ -249,7 +249,7 @@ done
 # ────────────────────────────────────────────────────────────────────────────
 if [[ -n "$PGBACKREST_CONF_PATH" ]]; then
   # Offline mode: operator-provided config avoids the live container dependency.
-  # WHY: if the Pi/NVMe/container is unavailable, `docker exec ... cat` cannot fetch
+  # WHY: if the HA host/disk/container is unavailable, `docker exec ... cat` cannot fetch
   # the live config. --pgbackrest-conf lets the operator supply a saved or manually
   # reconstructed pgbackrest.conf for the offline DR scenario.
   cp "$PGBACKREST_CONF_PATH" "${TMPDIR_SECRETS}/pgbackrest.conf"
@@ -412,8 +412,8 @@ done
 # (chmod 600 on id_ed25519) before the container mount took effect.
 
 # WHY log-path and spool-path redirects: /var/log/pgbackrest and /var/lib/pgbackrest may
-# not exist or lack write permissions in the Debian timescale image (different from the live
-# Alpine-based Pi image). Redirect both to /tmp which is always writable in any container.
+# not exist or lack write permissions in the upstream timescale image (different from the
+# app image). Redirect both to /tmp which is always writable in any container.
 docker exec "${CONTAINER_NAME}" bash -c \
   "mkdir -p /tmp/pgbackrest-logs /tmp/pgbackrest-spool; \
    sed -i 's|log-path=.*|log-path=/tmp/pgbackrest-logs|' /etc/pgbackrest/pgbackrest.conf; \
@@ -758,7 +758,7 @@ elif [[ "$REPO" == "2" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# Verify step 4 — Exact row count match (requires live Pi via ssh)
+# Verify step 4 — Exact row count match (requires live HA via ssh)
 # Skipped in offline mode (when live container is unavailable).
 #
 # WHY explicit empty-result fail: $(docker exec ... psql ...) captures stdout
