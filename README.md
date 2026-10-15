@@ -2,11 +2,11 @@
 
 [![License](https://img.shields.io/github/license/flaksit/ha-timescaledb)](LICENSE)
 
-A Home Assistant app providing PostgreSQL 18 with [TimescaleDB](https://www.timescale.com/) 2.25 — a high-performance time-series database optimized for the Raspberry Pi 5.
+A Home Assistant app providing PostgreSQL 18 with [TimescaleDB](https://www.timescale.com/) — a high-performance time-series database optimized for the Raspberry Pi 5.
 
 ## Features
 
-- PostgreSQL 18 with TimescaleDB 2.25 extension pre-loaded
+- PostgreSQL 18 with the TimescaleDB extension pre-loaded
 - Optimized defaults for Raspberry Pi 5 (4GB/8GB)
 - Configurable tuning via the app UI (shared_buffers, work_mem, etc.)
 - Role-based access control with auto-generated passwords
@@ -29,9 +29,9 @@ See the [full documentation](timescaledb/DOCS.md) for configuration options.
 | Component | Version |
 |-----------|---------|
 | PostgreSQL | 18 |
-| TimescaleDB | 2.25.2 |
-| s6-overlay | 3.2.2.0 |
 | Target | aarch64 (Raspberry Pi 5) |
+
+Other component versions are pinned in [`timescaledb/build.yaml`](timescaledb/build.yaml) and [`timescaledb/Dockerfile`](timescaledb/Dockerfile).
 
 ## License
 

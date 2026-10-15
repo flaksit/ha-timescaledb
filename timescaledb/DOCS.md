@@ -1,6 +1,6 @@
 # TimescaleDB App
 
-PostgreSQL 18 with TimescaleDB 2.26 for Home Assistant, packaged as a Home Assistant app and tuned for the Raspberry Pi 5.
+PostgreSQL 18 with TimescaleDB for Home Assistant, packaged as a Home Assistant app and tuned for the Raspberry Pi 5.
 
 ## What this app is (and is not)
 
@@ -140,7 +140,7 @@ Password behavior:
 
 ## TimescaleDB extension version
 
-The image ships a specific TimescaleDB version (currently 2.26) as `timescaledb-X.Y.Z.so`. On each app start, `init-db.sh` runs `ALTER EXTENSION timescaledb UPDATE` against the `homeassistant` database to align the per-database extension catalog (`pg_extension.extversion`) with the binary on disk. This is idempotent — no-op when already current — and is logged on each start as either `TimescaleDB extension at X.Y.Z (already current)` or `TimescaleDB extension upgraded: A.B.C → X.Y.Z`.
+The image ships a specific TimescaleDB version as `timescaledb-X.Y.Z.so`. On each app start, `init-db.sh` runs `ALTER EXTENSION timescaledb UPDATE` against the `homeassistant` database to align the per-database extension catalog (`pg_extension.extversion`) with the binary on disk. This is idempotent — no-op when already current — and is logged on each start as either `TimescaleDB extension at X.Y.Z (already current)` or `TimescaleDB extension upgraded: A.B.C → X.Y.Z`.
 
 PostgreSQL keeps every TimescaleDB minor version's `.so` side-by-side and loads whichever matches the catalog's recorded version. Without the auto-update, an image bump replaces the binaries on disk but sessions in pre-existing databases keep loading the older `.so`. The auto-update step removes that footgun: after a successful start, `SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';` reflects the version shipped by the current image.
 
@@ -181,7 +181,7 @@ Each repo is a separate sub-account so that a credential compromise of one repo 
 
 This is **load-bearing** configuration. Do not point pgBackRest at the main Hetzner account with subpaths like `/backups/ha-tsdb-continuous`.
 
-pgBackRest 2.58.0 has a recursion bug in `storageSftpPathCreate` (`src/storage/sftp/storage.c:1039-1047`):
+pgBackRest has a recursion bug in `storageSftpPathCreate` (`src/storage/sftp/storage.c`):
 
 ```c
 else if (sftpErrno == LIBSSH2_FX_NO_SUCH_FILE && !noParentCreate)
@@ -476,7 +476,7 @@ This is a documented scoped exception to the standard secret-injection guideline
 | `pgbackrest --stanza=timescaledb --repo=1 backup --type=diff` | repo1 | Differential backup to repo1 | Since last full; smaller than full |
 | `pgbackrest --stanza=timescaledb --repo=1 backup --type=incr` | repo1 | Incremental backup to repo1 | Since last backup of any type; smallest |
 | `pgbackrest --stanza=timescaledb --repo=2 backup --type=full --no-archive-check` | repo2 | Annual archival full backup to repo2 | `--no-archive-check` required: repo2 has no streaming WAL by design; without the flag pgBackRest times out waiting for a WAL segment to appear in repo2 (exit 82) |
-| `pgbackrest --stanza=timescaledb --repo=2 verify` | repo2 | Validate repo2 backup manifests and file checksums | `verify --no-pitr` is not valid in pgBackRest 2.58.0 (exit 31 "invalid option"). Run without it; behavior is equivalent since repo2 has no WAL archive stream to verify for PITR. |
+| `pgbackrest --stanza=timescaledb --repo=2 verify` | repo2 | Validate repo2 backup manifests and file checksums | `verify` does not accept `--no-pitr` (exit 31 "invalid option"). Run without it; behavior is equivalent since repo2 has no WAL archive stream to verify for PITR. |
 | `pgbackrest --stanza=timescaledb --repo=1 restore --pg1-path=/data/restore-test/pgdata --delta` | repo1 | Restore latest backup to a scratch directory for drill | Does not affect live PGDATA; `--delta` is downgraded to full-copy automatically if the target directory is empty |
 | `/usr/local/bin/pg_checksums --check -D /data/restore-test/pgdata` | — | Validate block checksums in a restored PGDATA | Must be preceded by `pg_resetwal -f /data/restore-test/pgdata` (see drill commands below) |
 
@@ -602,7 +602,7 @@ ssh ha "docker exec \
 
 Expected last line: `verify command end: completed successfully` (exit 0, ~2.7 min).
 
-Note: `--no-pitr` is not a valid option for `pgbackrest verify` in pgBackRest 2.58.0 (exit 31). Run without it.
+Note: `--no-pitr` is not a valid option for `pgbackrest verify` (exit 31). Run without it.
 
 The quarterly drill is manual; automated scheduling may come in a future release.
 

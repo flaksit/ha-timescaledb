@@ -373,7 +373,7 @@ docker exec "${CONTAINER_NAME}" bash -c \
 # never actually authenticates with it on a single-repo restore.
 #
 # WHY this option name is 'sftp-known-host' (singular, no '-file'): that is
-# the canonical pgBackRest 2.5x option key. An earlier 'sftp-known-hosts-file'
+# the canonical pgBackRest option key. An earlier 'sftp-known-hosts-file'
 # substitution silently failed to match anything in the conf, leaving the
 # default path in place and producing LIBSSH2_KNOWNHOST_CHECK_NOTFOUND.
 docker exec "${CONTAINER_NAME}" sh -c \

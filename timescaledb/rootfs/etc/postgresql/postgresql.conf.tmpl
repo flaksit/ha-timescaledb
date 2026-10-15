@@ -43,8 +43,8 @@ archive_mode = on
 # resolves as "command not found" in that context.
 # D-22a: archive-push uses a repo1-only config (--config=...) so WAL never fans to repo2.
 # The explicit --config= flag already suppresses conf.d include-path loading per pgBackRest's
-# loader (verified: pgBackRest 2.58.0 ignores default --config-include-path when --config is
-# set to a non-default path). --config-include-path=/nonexistent was dropped: pgBackRest 2.58.0
+# loader (verified: pgBackRest ignores default --config-include-path when --config is
+# set to a non-default path). --config-include-path=/nonexistent was dropped: pgBackRest
 # validates that the specified include path exists and errors with [073] if it does not, causing
 # every archive-push to fail. D-23's goal is met by --config= alone (no conf.d leak possible
 # when the loaded config is pgbackrest-archive.conf which has no repo2 keys).
