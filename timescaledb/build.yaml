@@ -6,6 +6,6 @@ args:
   # renovate: datasource=github-releases depName=just-containers/s6-overlay
   S6_OVERLAY_VERSION: "3.2.2.0"
   # renovate: datasource=github-releases depName=hassio-addons/bashio
-  BASHIO_VERSION: "0.17.5"
+  BASHIO_VERSION: "0.19.0"
   # renovate: datasource=github-releases depName=home-assistant/tempio
   TEMPIO_VERSION: "2024.11.2"
