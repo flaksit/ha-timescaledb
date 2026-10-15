@@ -41,6 +41,17 @@
       "extractVersion": "^v(?<version>.+)$"
     },
     {
+      "description": "pgbackrest is installed from Alpine edge/community (Dockerfile, verify-restore.sh). Read edge's APKINDEX directly instead of Repology, whose lookups fail from Renovate. The x86_64 index stands in for all arches: edge builds them from one APKBUILD.",
+      "matchDatasources": ["apk"],
+      "registryUrls": ["https://dl-cdn.alpinelinux.org/alpine?branch=edge&components=community&arch=x86_64"]
+    },
+    {
+      "description": "The dockerfile manager also extracts the `apk add pkg=ver` pin, duplicating the `# renovate:` annotated one; the regex manager owns it so Dockerfile and verify-restore.sh bump in one branch",
+      "matchManagers": ["dockerfile"],
+      "matchDatasources": ["apk"],
+      "enabled": false
+    },
+    {
       "description": "s6-overlay uses 4-part versions (3.2.2.0), which semver rejects",
       "matchPackageNames": ["just-containers/s6-overlay"],
       "versioning": "loose"
