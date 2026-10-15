@@ -8,4 +8,4 @@ args:
   # renovate: datasource=github-releases depName=hassio-addons/bashio
   BASHIO_VERSION: "0.19.0"
   # renovate: datasource=github-releases depName=home-assistant/tempio
-  TEMPIO_VERSION: "2024.11.2"
+  TEMPIO_VERSION: "2026.07.0"
