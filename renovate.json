@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "customManagers": [
+    {
+      "description": "Base image in build.yaml. The `-pg18` tag suffix is treated as compatibility, so PostgreSQL majors (which need a data migration) are never proposed.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)build\\.yaml$/"],
+      "matchStrings": [
+        ":\\s*(?<depName>timescale/timescaledb):(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Versions annotated with a `# renovate:` comment on the preceding line (build.yaml args, apk pins in the Dockerfile)",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)build\\.yaml$/", "/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*\\w+: \"?(?<currentValue>[^\"\\s]+)\"?",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n[^\\n]*\"\\w[\\w-]*=(?<currentValue>[^\"]+)\""
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Release tags carry a `v` prefix",
+      "matchPackageNames": ["just-containers/s6-overlay", "hassio-addons/bashio"],
+      "extractVersion": "^v(?<version>.+)$"
+    },
+    {
+      "description": "s6-overlay uses 4-part versions (3.2.2.0), which semver rejects",
+      "matchPackageNames": ["just-containers/s6-overlay"],
+      "versioning": "loose"
+    },
+    {
+      "description": "Both arches pin the same image; bump them in one PR",
+      "matchPackageNames": ["timescale/timescaledb"],
+      "groupName": "TimescaleDB image"
+    }
+  ]
+}
