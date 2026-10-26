@@ -1,6 +1,6 @@
 build_from:
-  aarch64: timescale/timescaledb:2.30.2-pg18
-  amd64: timescale/timescaledb:2.30.2-pg18
+  aarch64: timescale/timescaledb:2.31.0-pg18
+  amd64: timescale/timescaledb:2.31.0-pg18
 # `# renovate:` annotations are read by the custom regex manager in renovate.json.
 args:
   # renovate: datasource=github-releases depName=just-containers/s6-overlay
