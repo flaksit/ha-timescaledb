@@ -28,7 +28,7 @@ FROM ${BUILD_FROM} AS pgbackrest-stage
 RUN find /lib /usr/lib -name '*.so*' | sort > /tmp/libs-before
 
 # renovate: datasource=apk depName=pgbackrest
-RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.59.3-r0"
+RUN apk add --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/edge/community "pgbackrest=2.60.0-r0"
 
 # Export the pgbackrest binary plus only the .so files the runtime image lacks
 # (currently libssh2.so.1, libbz2.so.1; ldd parsing picks up future additions).

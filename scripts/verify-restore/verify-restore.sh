@@ -340,7 +340,7 @@ docker exec "${CONTAINER_NAME}" chown 70:70 /secrets/id_ed25519 /secrets/known_h
 # branch), keeping the two in sync.
 # ────────────────────────────────────────────────────────────────────────────
 # renovate: datasource=apk depName=pgbackrest
-PGBACKREST_PIN="2.59.3-r0"
+PGBACKREST_PIN="2.60.0-r0"
 PGBACKREST_REPO_URL="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 echo "==> Installing pgBackRest ${PGBACKREST_PIN} in verify container ..."
 docker exec "${CONTAINER_NAME}" sh -c \
